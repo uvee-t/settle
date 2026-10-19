@@ -12,8 +12,6 @@ export const disputes = pgTable("disputes", {
   provider: text("provider").notNull().default("paypal"),
   providerDisputeId: text("provider_dispute_id").notNull().unique(),
   providerTransactionId: text("provider_transaction_id"),
-  paymentId: uuid("payment_id"),
-  invoiceId: uuid("invoice_id"),
   reason: text("reason"),
   status: text("status"),
   disputeState: text("dispute_state"),

@@ -1,47 +1,6 @@
-# Settle v0.13.3 — Contract-to-Cash Platform
+# Settle Backend v0.5.0
 
 Production-oriented modular monolith for Settle: contracts, milestones, invoices, payments, PayPal synchronization, disputes, evidence, documents, audit logs, idempotency, Redis/BullMQ and transactional outbox processing.
-
-
-## Frontend
-
-The `frontend/` directory contains the React + Vite application for the existing v1 API. It uses React Router for real URL routes and includes workspace sign-in/registration, overview metrics and charts, cash-flow forecast visualizations, invoice and contract detail workflows, client editing, milestone billing, dispute visibility, document views, and workspace settings.
-
-Start the API and worker in separate terminals, then start the frontend:
-
-```bash
-# Terminal 1 — API
-npm run dev
-
-# Terminal 2 — background workers
-npm run worker
-
-# Terminal 3 — frontend
-npm run frontend:dev
-```
-
-Open `http://localhost:5173`. The default API URL is `http://localhost:4000`; set `SETTLE_API_URL` for the frontend server/container or change it in Settings (the browser remembers it locally). In production, set `CORS_ORIGIN` to the deployed frontend origin. Development explicitly allows Vite on `localhost:5173` and `127.0.0.1:5173`; the API allows PATCH during CORS preflight. Browser-based S3 uploads also require a bucket CORS policy that allows the frontend origin and the required PUT headers.
-
-Frontend syntax and static-server smoke checks:
-
-```bash
-npm run frontend:build
-```
-
-## Reliability checks
-
-```bash
-npm run build
-# Optional: configure a dedicated settle_test database first.
-cp .env.test.example .env.test
-# Edit .env.test, then load it in this shell before the integration tests.
-set -a; . ./.env.test; set +a
-npm test
-```
-
-The PostgreSQL integration tests only run against a database URL ending in `/settle_test`; without `DATABASE_URL`, those tests are skipped. Never point them at a production database.
-
-AI extraction recovery uses stable per-document-content BullMQ job IDs, retries retained failed jobs, pages through the verified-document and successful-run sets, and guards extraction with a Redis lock. Successful extraction reuse is scoped to the workspace, provider/model, prompt version, document ID, and extracted-text hash. AI recovery remains disabled when `AI_ENABLED` is false. Dead-letter retry/recovery remains deferred; see `docs/Settle_v0.13.0_Deferred_Work_Dead_Letter_Retry.docx`.
 
 ## Requirements
 
@@ -119,59 +78,3 @@ npm run db:migrate
 ## Document upload and verification
 
 Documents use workspace-scoped private S3 objects. Uploads require a client-provided SHA-256 checksum and size, are registered only after S3 checksum validation, and are asynchronously verified by the worker. Verification recomputes the checksum, validates content type and filename extension, and can run ClamAV malware scanning. See `docs/V0.7.0.md`.
-
-
-## v0.8.0 AI + Evidence Intelligence
-
-Settle can now run an asynchronous AI/evidence pipeline. Verified documents can be extracted into structured contract facts with source excerpts and confidence scores. PayPal disputes can be synchronized into a deterministic evidence pack, analyzed by AI, reviewed by an owner/admin, and submitted through the existing PayPal evidence adapter.
-
-AI is disabled by default. Configure `AI_ENABLED=true`, `AI_PROVIDER`, `AI_API_KEY`, and `AI_MODEL` in the environment. Gemini and OpenAI-compatible chat-completions providers are supported without storing provider SDK credentials in source code.
-
-For PDF extraction the production Docker image installs `poppler-utils` and uses `pdftotext`. AI output is validated with Zod and persisted in `ai_runs`; extracted claims are stored with provenance in `evidence_facts`. AI never directly submits a dispute response: approval is required before the evidence-pack submission endpoint can call PayPal.
-
-### AI document extraction
-
-After a verified document is stored, the worker queues `document.extract`. Inspect the result with:
-
-```text
-GET /v1/documents/:id/ai-extraction
-```
-
-### Dispute defense workflow
-
-```text
-PayPal dispute webhook
-  -> dispute synchronization
-  -> deterministic evidence collection
-  -> AI defense analysis
-  -> READY_FOR_REVIEW
-  -> owner/admin approval
-  -> PayPal evidence submission
-```
-
-Review endpoints:
-
-```text
-GET  /v1/disputes/:disputeId/evidence-pack
-POST /v1/disputes/:disputeId/evidence-pack/review
-POST /v1/disputes/:disputeId/evidence-pack/submit
-```
-
-## React frontend (v0.13.1 update)
-
-The React + Vite frontend lives in `frontend/` and is the single frontend used by Docker Compose. It adds URL-based React Router routes and frontend workflows for client editing, invoice detail/send/remind/cancel, contract milestones, payments, and workspace settings.
-
-- Local frontend: `npm install --prefix frontend && npm run frontend:dev`
-- Production build: `npm run frontend:build`
-- API URL: set `VITE_SETTLE_API_URL` at frontend build time (defaults to `http://localhost:4000`).
-
-The backend adds `PATCH /v1/clients/:id`, scoped to the authenticated workspace and audited. PayPal seller onboarding is not faked; it remains dependent on PayPal partner/merchant onboarding credentials and configuration.
-
-
-## Document uploads (DOCX and S3)
-
-The Documents page uploads through the workspace-scoped `POST /v1/documents/upload-url` and `POST /v1/documents` flow. DOCX is included in the default allowed MIME types. If your `.env` explicitly defines `DOCUMENT_ALLOWED_CONTENT_TYPES`, append `application/vnd.openxmlformats-officedocument.wordprocessingml.document` to that comma-separated list and restart the API.
-
-Because the browser uploads directly to S3 using a short-lived presigned URL, configure the S3 bucket CORS policy to allow the exact frontend origin (for local development, `http://localhost:5173`), method `PUT`, and headers `content-type` and `x-amz-server-side-encryption`. Do not expose AWS credentials in frontend environment variables. The backend must have valid S3 credentials and the configured bucket/region.
-
-The overview includes real API-backed quick actions and recent invoices/contracts. The workspace search queries the current workspace's clients, invoices and contracts endpoints; it does not use fabricated sample results.

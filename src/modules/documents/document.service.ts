@@ -95,17 +95,6 @@ export async function createUploadUrl(input: {
     };
 }
 
-export async function downloadStoredObject(key: string, workspaceId: string): Promise<Buffer> {
-  if (!key.startsWith(`workspaces/${workspaceId}/documents/`)) {
-    throw new ValidationError("Document storage key does not belong to this workspace.");
-  }
-  const response = await client().send(new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: key }));
-  if (!response.Body) throw new ValidationError("Document object has no readable body.");
-  const chunks: Buffer[] = [];
-  for await (const chunk of response.Body as AsyncIterable<Uint8Array>) chunks.push(Buffer.from(chunk));
-  return Buffer.concat(chunks);
-}
-
 export async function createDownloadUrl(key: string, workspaceId: string) {
     if (!key.startsWith(`workspaces/${workspaceId}/documents/`)) {
         throw new ExternalServiceError(
