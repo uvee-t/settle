@@ -14,12 +14,7 @@ export class PayPalInvoiceAdapter {
     }
 
     async create(payload: Record<string, unknown>, requestId: string) {
-        const response = await paypalClient.request<{
-            id?: string;
-            href?: string;
-            rel?: string;
-            method?: string;
-        }>("/v2/invoicing/invoices", {
+        return paypalClient.request("/v2/invoicing/invoices", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -27,23 +22,6 @@ export class PayPalInvoiceAdapter {
             },
             body: JSON.stringify(payload),
         });
-
-        let invoiceId = response.id;
-
-        if (!invoiceId && response.href) {
-            const match = response.href.match(
-                /\/v2\/invoicing\/invoices\/([^/?]+)$/,
-            );
-
-            if (match) {
-                invoiceId = decodeURIComponent(match[1]);
-            }
-        }
-
-        return {
-            ...response,
-            id: invoiceId,
-        };
     }
 
     async send(invoiceId: string, payload: Record<string, unknown> = {}) {

@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { disputes } from "../../db/schema/disputes.js";
@@ -6,7 +5,6 @@ import { invoices } from "../../db/schema/invoices.js";
 import { payments } from "../../db/schema/core.js";
 import { disputeEvidenceRequests, disputeEvidenceSubmissions } from "../../db/schema/evidence.js";
 import { paypalDisputes, type PayPalDispute } from "../paypal/paypal.disputes.js";
-import { aiQueue } from "../../lib/queue.js";
 
 function mapDispute(payload: PayPalDispute, workspaceId?: string) {
   const amount = payload.dispute_amount;
@@ -88,15 +86,6 @@ export async function syncDispute(providerDisputeId: string, workspaceId?: strin
         updatedAt: new Date(),
       },
     });
-  }
-
-  if (row.workspaceId) {
-    const fingerprint = createHash("sha256").update(JSON.stringify(payload)).digest("hex").slice(0, 20);
-    await aiQueue.add(
-      "dispute.analyze",
-      { disputeId: row.id, workspaceId: row.workspaceId },
-      { jobId: `dispute-ai-${row.id}-${fingerprint}` },
-    );
   }
 
   return row;
