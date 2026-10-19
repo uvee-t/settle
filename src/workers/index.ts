@@ -1,5 +1,5 @@
 import { Worker } from "bullmq";
-import { and, eq, lte } from "drizzle-orm";
+import { and, eq, lte, inArray } from "drizzle-orm";
 
 import { redis } from "../lib/redis.js";
 import { logger } from "../lib/logger.js";
@@ -7,15 +7,20 @@ import { db, pool } from "../db/client.js";
 
 import { webhookEvents } from "../db/schema/webhook-events.js";
 import { invoices } from "../db/schema/invoices.js";
-import { payments } from "../db/schema/core.js";
+import { payments, documents } from "../db/schema/core.js";
 import { outboxEvents } from "../db/schema/outbox.js";
 
 import { syncDispute } from "../modules/disputes/dispute.service.js";
+import { extractContractFacts } from "../modules/ai/ai.service.js";
+import { analyzeEvidencePack, generateEvidencePack } from "../modules/evidence/evidence-intelligence.service.js";
+import { evidencePacks, aiRuns } from "../db/schema/ai.js";
 import { paypalInvoices } from "../modules/paypal/paypal.invoices.js";
+import { verifyStoredDocument } from "../modules/documents/document.service.js";
 
-import { webhookQueue, outboxQueue, reminderQueue } from "../lib/queue.js";
+import { webhookQueue, outboxQueue, reminderQueue, documentQueue, aiQueue } from "../lib/queue.js";
 import { env } from "../config/env.js";
 import { writeAudit } from "../lib/audit.js";
+import { AppError } from "../lib/errors.js";
 
 /* -------------------------------------------------------------------------- */
 /* Helpers                                                                    */
@@ -748,6 +753,145 @@ reminderWorker.on("failed", (job, error) =>
 );
 
 /* -------------------------------------------------------------------------- */
+/* Document verification worker                                               */
+/* -------------------------------------------------------------------------- */
+
+const documentWorker = new Worker(
+    "settle-documents",
+    async (job) => {
+        const { documentId } = job.data as { documentId: string };
+        const document = await db.query.documents.findFirst({ where: eq(documents.id, documentId) });
+        if (!document) return;
+        if (document.verificationStatus === "verified") return;
+
+        await db.update(documents).set({ verificationStatus: "verifying", verificationError: null }).where(eq(documents.id, document.id));
+
+        try {
+            const result = await verifyStoredDocument({
+                workspaceId: document.workspaceId,
+                objectKey: document.objectKey,
+                filename: document.filename,
+                contentType: document.contentType,
+                expectedSizeBytes: Number(document.sizeBytes),
+                expectedSha256: document.sha256,
+            });
+
+            const [verified] = await db.update(documents).set({
+                status: "verified",
+                verificationStatus: "verified",
+                verificationError: null,
+                detectedContentType: result.detectedContentType,
+                verifiedAt: new Date(),
+            }).where(eq(documents.id, document.id)).returning();
+
+            await writeAudit({
+                workspaceId: document.workspaceId,
+                actorType: "system",
+                action: "document.verified",
+                resourceType: "document",
+                resourceId: document.id,
+                after: verified,
+            });
+            if (env.AI_ENABLED) {
+                try {
+                    await aiQueue.add(
+                        "document.extract",
+                        { documentId: document.id },
+                        { jobId: `document-ai-${document.id}-${document.sha256}` },
+                    );
+                } catch (error) {
+                    logger.error({ documentId: document.id, err: error }, "Failed to enqueue document AI extraction; recovery will retry");
+                }
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            await db.update(documents).set({
+                status: "rejected",
+                verificationStatus: "rejected",
+                verificationError: message.slice(0, 1000),
+            }).where(eq(documents.id, document.id));
+            await writeAudit({
+                workspaceId: document.workspaceId,
+                actorType: "system",
+                action: "document.verification_failed",
+                resourceType: "document",
+                resourceId: document.id,
+                metadata: { error: message.slice(0, 1000) },
+            });
+            if (error instanceof AppError && error.statusCode < 500) return;
+            throw error;
+        }
+    },
+    { connection: redis, concurrency: 3 },
+);
+
+documentWorker.on("ready", () => logger.info("Document verification worker ready"));
+documentWorker.on("failed", (job, error) => logger.error({ jobId: job?.id, err: error }, "Document verification job failed"));
+
+const recoverDocuments = async () => {
+    const rows = await db.query.documents.findMany({ where: inArray(documents.verificationStatus, ["pending", "verifying"]), limit: 100 });
+    for (const document of rows) {
+        await documentQueue.add("document.verify", { documentId: document.id }, { jobId: `document-verify-${document.id}` });
+    }
+};
+
+void recoverDocuments();
+const documentRecoveryInterval = setInterval(() => void recoverDocuments().catch((error) => logger.error({ err: error }, "Document recovery failed")), 60 * 1000);
+
+/* -------------------------------------------------------------------------- */
+/* AI + evidence intelligence worker                                         */
+/* -------------------------------------------------------------------------- */
+
+const aiWorker = new Worker(
+    "settle-ai",
+    async (job) => {
+        if (job.name === "document.extract") {
+            const { documentId } = job.data as { documentId: string };
+            if (!env.AI_ENABLED) {
+                logger.info({ documentId }, "AI disabled; document extraction skipped");
+                return;
+            }
+            await extractContractFacts(documentId);
+            logger.info({ documentId }, "Document AI extraction completed");
+            return;
+        }
+        if (job.name === "dispute.analyze") {
+            const { disputeId, workspaceId } = job.data as { disputeId: string; workspaceId: string };
+            if (!env.AI_ENABLED) {
+                logger.info({ disputeId }, "AI disabled; dispute analysis skipped");
+                return;
+            }
+            const generated = await generateEvidencePack(disputeId, workspaceId);
+            await analyzeEvidencePack(generated.packId, workspaceId);
+            logger.info({ disputeId, packId: generated.packId }, "Dispute evidence pack analyzed");
+            return;
+        }
+        throw new Error(`Unknown AI job ${job.name}`);
+    },
+    { connection: redis, concurrency: 2 },
+);
+
+aiWorker.on("ready", () => logger.info("AI/evidence worker ready"));
+aiWorker.on("failed", (job, error) => logger.error({ jobId: job?.id, jobName: job?.name, err: error }, "AI job failed"));
+
+const recoverAiJobs = async () => {
+    if (!env.AI_ENABLED) return;
+    const verified = await db.query.documents.findMany({ where: eq(documents.verificationStatus, "verified"), limit: 100 });
+    const runs = await db.query.aiRuns.findMany({ where: eq(aiRuns.task, "document.contract_extraction"), limit: 5000 });
+    const analyzedIds = new Set(runs.map((run) => {
+        const result = run.result as { document_id?: string } | null;
+        return result?.document_id;
+    }).filter((id): id is string => Boolean(id)));
+    for (const document of verified) {
+        if (analyzedIds.has(document.id)) continue;
+        await aiQueue.add("document.extract", { documentId: document.id }, { jobId: `document-ai-recovery-${document.id}-${Date.now()}` });
+    }
+};
+
+void recoverAiJobs().catch((error) => logger.error({ err: error }, "AI recovery failed"));
+const aiRecoveryInterval = setInterval(() => void recoverAiJobs().catch((error) => logger.error({ err: error }, "AI recovery failed")), 5 * 60 * 1000);
+
+/* -------------------------------------------------------------------------- */
 /* Graceful shutdown                                                         */
 /* -------------------------------------------------------------------------- */
 
@@ -770,8 +914,10 @@ async function shutdown(signal: string) {
     clearInterval(dispatcher);
     clearInterval(reminderDispatcher);
     clearInterval(webhookRecoveryInterval);
+    clearInterval(documentRecoveryInterval);
+    clearInterval(aiRecoveryInterval);
 
-    await Promise.all([webhookWorker.close(), outboxWorker.close(), reminderWorker.close()]);
+    await Promise.all([webhookWorker.close(), outboxWorker.close(), reminderWorker.close(), documentWorker.close(), aiWorker.close()]);
 
     await redis.quit();
     await pool.end();

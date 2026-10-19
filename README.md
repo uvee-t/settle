@@ -73,3 +73,45 @@ Run database migrations in deployment:
 npm run db:generate
 npm run db:migrate
 ```
+
+
+## Document upload and verification
+
+Documents use workspace-scoped private S3 objects. Uploads require a client-provided SHA-256 checksum and size, are registered only after S3 checksum validation, and are asynchronously verified by the worker. Verification recomputes the checksum, validates content type and filename extension, and can run ClamAV malware scanning. See `docs/V0.7.0.md`.
+
+
+## v0.8.0 AI + Evidence Intelligence
+
+Settle can now run an asynchronous AI/evidence pipeline. Verified documents can be extracted into structured contract facts with source excerpts and confidence scores. PayPal disputes can be synchronized into a deterministic evidence pack, analyzed by AI, reviewed by an owner/admin, and submitted through the existing PayPal evidence adapter.
+
+AI is disabled by default. Configure `AI_ENABLED=true`, `AI_PROVIDER`, `AI_API_KEY`, and `AI_MODEL` in the environment. Gemini and OpenAI-compatible chat-completions providers are supported without storing provider SDK credentials in source code.
+
+For PDF extraction the production Docker image installs `poppler-utils` and uses `pdftotext`. AI output is validated with Zod and persisted in `ai_runs`; extracted claims are stored with provenance in `evidence_facts`. AI never directly submits a dispute response: approval is required before the evidence-pack submission endpoint can call PayPal.
+
+### AI document extraction
+
+After a verified document is stored, the worker queues `document.extract`. Inspect the result with:
+
+```text
+GET /v1/documents/:id/ai-extraction
+```
+
+### Dispute defense workflow
+
+```text
+PayPal dispute webhook
+  -> dispute synchronization
+  -> deterministic evidence collection
+  -> AI defense analysis
+  -> READY_FOR_REVIEW
+  -> owner/admin approval
+  -> PayPal evidence submission
+```
+
+Review endpoints:
+
+```text
+GET  /v1/disputes/:disputeId/evidence-pack
+POST /v1/disputes/:disputeId/evidence-pack/review
+POST /v1/disputes/:disputeId/evidence-pack/submit
+```
