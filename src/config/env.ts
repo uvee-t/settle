@@ -16,7 +16,7 @@ const schema = z.object({
     PAYPAL_CLIENT_SECRET: z.string().optional(),
     PAYPAL_WEBHOOK_ID: z.string().optional(),
 
-    CORS_ORIGIN: z.string().default("http://localhost:3000"),
+    CORS_ORIGIN: z.string().default("http://localhost:5173"),
 
     AWS_REGION: z.string().default("ap-south-1"),
     AWS_ACCESS_KEY_ID: z.string().optional(),
@@ -81,13 +81,22 @@ const schema = z.object({
     CLAMAV_PORT: z.coerce.number().int().positive().default(3310),
 
     AI_ENABLED: z.preprocess(
-        (value) => value === undefined ? false : value === true || value === "true" || value === "1",
+        (value) =>
+            value === undefined
+                ? false
+                : value === true || value === "true" || value === "1",
         z.boolean(),
     ),
     AI_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
     AI_API_KEY: z.string().optional(),
     AI_MODEL: z.string().default("gemini-2.5-flash"),
-    AI_BASE_URL: z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.url().optional()),
+    AI_BASE_URL: z.preprocess(
+        (value) =>
+            typeof value === "string" && value.trim() === ""
+                ? undefined
+                : value,
+        z.url().optional(),
+    ),
     AI_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
     AI_MAX_INPUT_CHARS: z.coerce.number().int().positive().default(120_000),
     AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8_000),

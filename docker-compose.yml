@@ -68,7 +68,7 @@ services:
 
   frontend:
     build:
-      context: ./frontend-react
+      context: ./frontend
       args:
         VITE_SETTLE_API_URL: http://localhost:4000
     environment:

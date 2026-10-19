@@ -25,8 +25,7 @@ Open `http://localhost:3000`. The default API URL is `http://localhost:4000`; se
 Frontend syntax and static-server smoke checks:
 
 ```bash
-npm run frontend:check
-node --test frontend/server.test.mjs
+npm run frontend:build
 ```
 
 ## Reliability checks
@@ -160,9 +159,9 @@ POST /v1/disputes/:disputeId/evidence-pack/submit
 
 ## React frontend (v0.13.1 update)
 
-A React + Vite frontend is provided in `frontend-react/` and is now the `frontend` service in Docker Compose. It adds URL-based React Router routes and frontend workflows for client editing, invoice detail/send/remind/cancel, contract milestones, payments, and workspace settings.
+The React + Vite frontend lives in `frontend/` and is the single frontend used by Docker Compose. It adds URL-based React Router routes and frontend workflows for client editing, invoice detail/send/remind/cancel, contract milestones, payments, and workspace settings.
 
-- Local frontend: `npm install --prefix frontend-react && npm run frontend:dev`
+- Local frontend: `npm install --prefix frontend && npm run frontend:dev`
 - Production build: `npm run frontend:build`
 - API URL: set `VITE_SETTLE_API_URL` at frontend build time (defaults to `http://localhost:4000`).
 

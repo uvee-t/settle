@@ -6,13 +6,13 @@ This is the React + Vite replacement frontend. The existing Fastify API and data
 
 1. Start the existing API on port 4000 using the project's normal `.env` and database setup.
 2. From the repository root run `npm install` for the backend dependencies if needed.
-3. Run `npm install --prefix frontend-react`.
+3. Run `npm install --prefix frontend`.
 4. Run `npm run frontend:dev` and open `http://localhost:5173`.
 5. If your API is elsewhere, set `VITE_SETTLE_API_URL` before starting Vite, e.g. `VITE_SETTLE_API_URL=http://localhost:4000 npm run frontend:dev`.
 
 ## Production build
 
-`npm run frontend:build` creates `frontend-react/dist`. Serve it through a static host configured to fall back to `index.html` for frontend routes, while keeping `/v1/*`, `/webhooks/*`, and asset paths routed appropriately. Vite preview (`npm --prefix frontend-react run preview`) supports SPA history fallback for local smoke tests.
+`npm run frontend:build` creates `frontend/dist`. Serve it through a static host configured to fall back to `index.html` for frontend routes, while keeping `/v1/*`, `/webhooks/*`, and asset paths routed appropriately. Vite preview (`npm --prefix frontend run preview`) supports SPA history fallback for local smoke tests.
 
 ## Included workflows
 
