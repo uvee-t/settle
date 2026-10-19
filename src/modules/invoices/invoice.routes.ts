@@ -470,7 +470,9 @@ export async function invoiceRoutes(app: FastifyInstance) {
                     suppliedPayload ?? {
                         detail: {
                             invoice_number:
-                                invoice.invoiceNumber ?? `SETTLE-${invoice.id}`,
+                                invoice.invoiceNumber ??
+                                invoice.reference ??
+                                `SETTLE-${invoice.id.slice(0, 8)}`,
 
                             reference: invoice.reference ?? undefined,
 
