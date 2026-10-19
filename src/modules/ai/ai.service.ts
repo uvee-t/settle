@@ -254,84 +254,153 @@ export async function extractDocumentText(
 }
 
 export async function extractContractFacts(documentId: string) {
-    const document = await db.query.documents.findFirst({
-        where: eq(documents.id, documentId),
-    });
-    if (!document || document.verificationStatus !== "verified")
-        throw new ValidationError(
-            "Only verified documents can be analyzed by AI.",
-        );
-    const text = await extractDocumentText(document);
-    const inputHash = createHash("sha256").update(text).digest("hex");
-    const prompt = `You are Settle's contract evidence extraction engine. Extract only facts explicitly supported by the source. Do not guess.\n\nSOURCE DOCUMENT: ${document.filename}\nCONTENT:\n${text}\n\nReturn JSON matching this shape exactly: {"document_type":"contract|invoice|receipt|other","title":null,"parties":[{"name":"","role":""}],"currency":null,"total_amount":null,"effective_date":null,"governing_law":null,"payment_terms":{"due_days":null,"notes":null},"milestones":[{"name":"","amount":null,"due_date":null,"deliverables":[]}],"claims":[{"field":"","value":null,"confidence":0.0,"source_excerpt":""}],"summary":""}. Source excerpts must be verbatim short excerpts from the provided content.`;
-    const runStart = new Date();
-    try {
-        const result = await requestProvider(prompt);
-        const parsed = contractExtractionSchema.parse(result.parsed);
-        const [run] = await db
-            .insert(aiRuns)
-            .values({
-                workspaceId: document.workspaceId,
-                task: "document.contract_extraction",
-                provider: env.AI_PROVIDER,
-                model: env.AI_MODEL,
-                promptVersion: "contract-extraction-v1",
-                inputHash,
-                status: "SUCCEEDED",
-                result: { document_id: document.id, extraction: parsed },
-                tokensIn:
-                    result.tokensIn == null
-                        ? undefined
-                        : String(result.tokensIn),
-                tokensOut:
-                    result.tokensOut == null
-                        ? undefined
-                        : String(result.tokensOut),
-                latencyMs: String(result.latencyMs),
-            })
-            .returning();
-        await db
-            .delete(evidenceFacts)
-            .where(
-                and(
-                    eq(evidenceFacts.sourceType, "document"),
-                    eq(evidenceFacts.sourceId, document.id),
+    return withRedisLock(
+        `settle:ai:extract:${documentId}`,
+        async () => {
+            const document = await db.query.documents.findFirst({
+                where: eq(documents.id, documentId),
+            });
+            if (!document || document.verificationStatus !== "verified") {
+                throw new ValidationError(
+                    "Only verified documents can be analyzed by AI.",
+                );
+            }
+
+            const text = await extractDocumentText(document);
+            const inputHash = createHash("sha256").update(text).digest("hex");
+            const promptVersion = "contract-extraction-v1";
+            const successfulRuns = await db.query.aiRuns.findMany({
+                where: and(
+                    eq(aiRuns.workspaceId, document.workspaceId),
+                    eq(aiRuns.task, "document.contract_extraction"),
+                    eq(aiRuns.provider, env.AI_PROVIDER),
+                    eq(aiRuns.model, env.AI_MODEL),
+                    eq(aiRuns.promptVersion, promptVersion),
+                    eq(aiRuns.inputHash, inputHash),
+                    eq(aiRuns.status, "SUCCEEDED"),
                 ),
-            );
-        if (parsed.claims.length)
-            await db.insert(evidenceFacts).values(
-                parsed.claims.map((claim) => ({
+                orderBy: (run, { desc }) => [desc(run.createdAt)],
+            });
+            const existingRun = successfulRuns.find((run) => {
+                const previous = run.result as { document_id?: string } | null;
+                return previous?.document_id === document.id;
+            });
+
+            if (existingRun) {
+                const previous = existingRun.result as {
+                    document_id?: string;
+                    extraction?: unknown;
+                } | null;
+                if (previous?.extraction) {
+                    const extraction = contractExtractionSchema.parse(previous.extraction);
+                    // Repair facts if a prior version persisted the successful run
+                    // before its evidence-fact writes completed.
+                    await db.transaction(async (tx) => {
+                        await tx
+                            .delete(evidenceFacts)
+                            .where(
+                                and(
+                                    eq(evidenceFacts.sourceType, "document"),
+                                    eq(evidenceFacts.sourceId, document.id),
+                                ),
+                            );
+                        if (extraction.claims.length) {
+                            await tx.insert(evidenceFacts).values(
+                                extraction.claims.map((claim) => ({
+                                    workspaceId: document.workspaceId,
+                                    sourceType: "document",
+                                    sourceId: document.id,
+                                    factType: claim.field,
+                                    value: claim.value,
+                                    confidence: String(claim.confidence),
+                                    sourceExcerpt: claim.source_excerpt,
+                                    aiRunId: existingRun.id,
+                                })),
+                            );
+                        }
+                    });
+                    return {
+                        run: existingRun,
+                        extraction,
+                        sourceLength: text.length,
+                        generatedAt: existingRun.createdAt.toISOString(),
+                    };
+                }
+            }
+
+            const prompt = `You are Settle's contract evidence extraction engine. Extract only facts explicitly supported by the source. Do not guess.\n\nSOURCE DOCUMENT: ${document.filename}\nCONTENT:\n${text}\n\nReturn JSON matching this shape exactly: {"document_type":"contract|invoice|receipt|other","title":null,"parties":[{"name":"","role":""}],"currency":null,"total_amount":null,"effective_date":null,"governing_law":null,"payment_terms":{"due_days":null,"notes":null},"milestones":[{"name":"","amount":null,"due_date":null,"deliverables":[]}],"claims":[{"field":"","value":null,"confidence":0.0,"source_excerpt":""}],"summary":""}. Source excerpts must be verbatim short excerpts from the provided content.`;
+            const runStart = new Date();
+            try {
+                const result = await requestProvider(prompt);
+                const parsed = contractExtractionSchema.parse(result.parsed);
+                const run = await db.transaction(async (tx) => {
+                    const [createdRun] = await tx
+                        .insert(aiRuns)
+                        .values({
+                            workspaceId: document.workspaceId,
+                            task: "document.contract_extraction",
+                            provider: env.AI_PROVIDER,
+                            model: env.AI_MODEL,
+                            promptVersion,
+                            inputHash,
+                            status: "SUCCEEDED",
+                            result: { document_id: document.id, extraction: parsed },
+                            tokensIn: result.tokensIn == null ? undefined : String(result.tokensIn),
+                            tokensOut: result.tokensOut == null ? undefined : String(result.tokensOut),
+                            latencyMs: String(result.latencyMs),
+                        })
+                        .returning();
+
+                    await tx
+                        .delete(evidenceFacts)
+                        .where(
+                            and(
+                                eq(evidenceFacts.sourceType, "document"),
+                                eq(evidenceFacts.sourceId, document.id),
+                            ),
+                        );
+                    if (parsed.claims.length) {
+                        await tx.insert(evidenceFacts).values(
+                            parsed.claims.map((claim) => ({
+                                workspaceId: document.workspaceId,
+                                sourceType: "document",
+                                sourceId: document.id,
+                                factType: claim.field,
+                                value: claim.value,
+                                confidence: String(claim.confidence),
+                                sourceExcerpt: claim.source_excerpt,
+                                aiRunId: createdRun.id,
+                            })),
+                        );
+                    }
+                    return createdRun;
+                });
+
+                return {
+                    run,
+                    extraction: parsed,
+                    sourceLength: text.length,
+                    generatedAt: runStart.toISOString(),
+                };
+            } catch (error) {
+                const message = error instanceof Error ? error.message : String(error);
+                await db.insert(aiRuns).values({
                     workspaceId: document.workspaceId,
-                    sourceType: "document",
-                    sourceId: document.id,
-                    factType: claim.field,
-                    value: claim.value,
-                    confidence: String(claim.confidence),
-                    sourceExcerpt: claim.source_excerpt,
-                    aiRunId: run.id,
-                })),
-            );
-        return {
-            run,
-            extraction: parsed,
-            sourceLength: text.length,
-            generatedAt: runStart.toISOString(),
-        };
-    } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        await db.insert(aiRuns).values({
-            workspaceId: document.workspaceId,
-            task: "document.contract_extraction",
-            provider: env.AI_PROVIDER,
-            model: env.AI_MODEL,
-            promptVersion: "contract-extraction-v1",
-            inputHash,
-            status: "FAILED",
-            error: message.slice(0, 1000),
-            latencyMs: String(Date.now() - runStart.getTime()),
-        });
-        throw error;
-    }
+                    task: "document.contract_extraction",
+                    provider: env.AI_PROVIDER,
+                    model: env.AI_MODEL,
+                    promptVersion,
+                    inputHash,
+                    status: "FAILED",
+                    result: { document_id: document.id },
+                    error: message.slice(0, 1000),
+                    latencyMs: String(Date.now() - runStart.getTime()),
+                });
+                throw error;
+            }
+        },
+        { ttlMs: Math.max(env.AI_TIMEOUT_MS + 120_000, 180_000), waitMs: 10_000 },
+    );
 }
 
 export async function generateDisputeDefense(input: {

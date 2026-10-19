@@ -7,6 +7,7 @@ import { aiRuns, evidenceFacts } from "../../db/schema/ai.js";
 import { requireRole, requireWorkspace } from "../auth/auth.plugin.js";
 import { aiQueue } from "../../lib/queue.js";
 import { NotFoundError, ValidationError } from "../../lib/errors.js";
+import { documentExtractionJobId } from "./ai-jobs.js";
 
 export async function aiRoutes(app: FastifyInstance) {
   app.post("/v1/documents/:id/ai-extraction", { preHandler: requireRole("owner", "admin", "member") }, async (request, reply) => {
@@ -19,9 +20,32 @@ export async function aiRoutes(app: FastifyInstance) {
       throw new ValidationError("Only verified documents can be analyzed by AI.");
     }
 
-    const jobId = `document-ai-${document.id}-${document.sha256}`;
+    const jobId = documentExtractionJobId(document.id, document.sha256);
     const existingJob = await aiQueue.getJob(jobId);
-    if (!existingJob) {
+    if (existingJob) {
+      const state = await existingJob.getState();
+      if (state === "failed") {
+        await existingJob.retry("failed");
+      } else if (state === "completed") {
+        // A retained completed job may outlive its persisted run only after an
+        // interrupted/disabled processing path. Recreate it when no success exists.
+        const successfulRuns = await db.query.aiRuns.findMany({
+          where: and(
+            eq(aiRuns.workspaceId, document.workspaceId),
+            eq(aiRuns.task, "document.contract_extraction"),
+            eq(aiRuns.status, "SUCCEEDED"),
+          ),
+        });
+        const hasSuccessfulRun = successfulRuns.some((run) => {
+          const result = run.result as { document_id?: string } | null;
+          return result?.document_id === document.id;
+        });
+        if (!hasSuccessfulRun) {
+          await existingJob.remove();
+          await aiQueue.add("document.extract", { documentId: document.id }, { jobId });
+        }
+      }
+    } else {
       await aiQueue.add(
         "document.extract",
         { documentId: document.id },

@@ -66,5 +66,17 @@ services:
       clamav:
         condition: service_healthy
 
+  frontend:
+    build:
+      context: ./frontend-react
+      args:
+        VITE_SETTLE_API_URL: http://localhost:4000
+    environment:
+      PORT: 3000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
 volumes:
   postgres_data:

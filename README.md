@@ -1,6 +1,48 @@
-# Settle Backend v0.5.0
+# Settle v0.13.0 — Contract-to-Cash Platform
 
 Production-oriented modular monolith for Settle: contracts, milestones, invoices, payments, PayPal synchronization, disputes, evidence, documents, audit logs, idempotency, Redis/BullMQ and transactional outbox processing.
+
+
+## Frontend
+
+The `frontend/` directory contains a responsive, dependency-free browser application for the existing v1 API. It includes workspace sign-in/registration, overview metrics, cash-flow forecast, invoice and contract registers, client management, dispute visibility, private document upload, AI extraction status, and workspace settings.
+
+Start the API and worker in separate terminals, then start the frontend:
+
+```bash
+# Terminal 1 — API
+npm run dev
+
+# Terminal 2 — background workers
+npm run worker
+
+# Terminal 3 — frontend
+npm run frontend:dev
+```
+
+Open `http://localhost:3000`. The default API URL is `http://localhost:4000`; set `SETTLE_API_URL` for the frontend server/container or change it in Settings (the browser remembers it locally). Set `CORS_ORIGIN` to the frontend origin for local development and to the deployed frontend origin in production. Browser-based S3 uploads also require a bucket CORS policy that allows the frontend origin and the required PUT headers.
+
+Frontend syntax and static-server smoke checks:
+
+```bash
+npm run frontend:check
+node --test frontend/server.test.mjs
+```
+
+## Reliability checks
+
+```bash
+npm run build
+# Optional: configure a dedicated settle_test database first.
+cp .env.test.example .env.test
+# Edit .env.test, then load it in this shell before the integration tests.
+set -a; . ./.env.test; set +a
+npm test
+```
+
+The PostgreSQL integration tests only run against a database URL ending in `/settle_test`; without `DATABASE_URL`, those tests are skipped. Never point them at a production database.
+
+AI extraction recovery uses stable per-document-content BullMQ job IDs, retries retained failed jobs, pages through the verified-document and successful-run sets, and guards extraction with a Redis lock. Successful extraction reuse is scoped to the workspace, provider/model, prompt version, document ID, and extracted-text hash. AI recovery remains disabled when `AI_ENABLED` is false. Dead-letter retry/recovery remains deferred; see `docs/Settle_v0.13.0_Deferred_Work_Dead_Letter_Retry.docx`.
 
 ## Requirements
 
@@ -115,3 +157,13 @@ GET  /v1/disputes/:disputeId/evidence-pack
 POST /v1/disputes/:disputeId/evidence-pack/review
 POST /v1/disputes/:disputeId/evidence-pack/submit
 ```
+
+## React frontend (v0.13.1 update)
+
+A React + Vite frontend is provided in `frontend-react/` and is now the `frontend` service in Docker Compose. It adds URL-based React Router routes and frontend workflows for client editing, invoice detail/send/remind/cancel, contract milestones, payments, and workspace settings.
+
+- Local frontend: `npm install --prefix frontend-react && npm run frontend:dev`
+- Production build: `npm run frontend:build`
+- API URL: set `VITE_SETTLE_API_URL` at frontend build time (defaults to `http://localhost:4000`).
+
+The backend adds `PATCH /v1/clients/:id`, scoped to the authenticated workspace and audited. PayPal seller onboarding is not faked; it remains dependent on PayPal partner/merchant onboarding credentials and configuration.

@@ -14,6 +14,7 @@ import { deadLetterJobs } from "../db/schema/dead-letter.js";
 
 import { syncDispute } from "../modules/disputes/dispute.service.js";
 import { extractContractFacts } from "../modules/ai/ai.service.js";
+import { documentExtractionJobId, successfulExtractionDocumentIds } from "../modules/ai/ai-jobs.js";
 import {
     analyzeEvidencePack,
     generateEvidencePack,
@@ -1169,7 +1170,7 @@ const documentWorker = new Worker(
                             documentId: document.id,
                         },
                         {
-                            jobId: `document-ai-${document.id}-${document.sha256}`,
+                            jobId: documentExtractionJobId(document.id, document.sha256),
                         },
                     );
                 } catch (error) {
@@ -1368,42 +1369,57 @@ aiWorker.on("failed", (job, error) =>
 const recoverAiJobs = async () => {
     if (!env.AI_ENABLED) return;
 
-    const verified = await db.query.documents.findMany({
-        where: eq(documents.verificationStatus, "verified"),
-        limit: 100,
-    });
+    const analyzedIds = new Set<string>();
+    const runPageSize = 1000;
+    let runOffset = 0;
+    while (true) {
+        const runs = await db.query.aiRuns.findMany({
+            where: and(
+                eq(aiRuns.task, "document.contract_extraction"),
+                eq(aiRuns.status, "SUCCEEDED"),
+            ),
+            orderBy: (run, { asc }) => [asc(run.createdAt), asc(run.id)],
+            limit: runPageSize,
+            offset: runOffset,
+        });
+        for (const id of successfulExtractionDocumentIds(runs)) analyzedIds.add(id);
+        if (runs.length < runPageSize) break;
+        runOffset += runs.length;
+    }
 
-    const runs = await db.query.aiRuns.findMany({
-        where: eq(aiRuns.task, "document.contract_extraction"),
-        limit: 5000,
-    });
+    const documentPageSize = 100;
+    let documentOffset = 0;
+    while (true) {
+        const verified = await db.query.documents.findMany({
+            where: eq(documents.verificationStatus, "verified"),
+            orderBy: (document, { asc }) => [asc(document.createdAt), asc(document.id)],
+            limit: documentPageSize,
+            offset: documentOffset,
+        });
+        if (verified.length === 0) break;
 
-    const analyzedIds = new Set(
-        runs
-            .map((run) => {
-                const result = run.result as {
-                    document_id?: string;
-                } | null;
-
-                return result?.document_id;
-            })
-            .filter((id): id is string => Boolean(id)),
-    );
-
-    for (const document of verified) {
-        if (analyzedIds.has(document.id)) {
-            continue;
+        for (const document of verified) {
+            if (analyzedIds.has(document.id)) continue;
+            const jobId = documentExtractionJobId(document.id, document.sha256);
+            const existingJob = await aiQueue.getJob(jobId);
+            if (existingJob) {
+                const state = await existingJob.getState();
+                if (state === "failed") {
+                    await existingJob.retry("failed");
+                } else if (state === "completed") {
+                    // No successful DB run was found, so this completed queue record
+                    // must not permanently block recovery.
+                    await existingJob.remove();
+                    await aiQueue.add("document.extract", { documentId: document.id }, { jobId });
+                }
+                // Waiting, delayed, active and other in-flight states are already queued.
+                continue;
+            }
+            await aiQueue.add("document.extract", { documentId: document.id }, { jobId });
         }
 
-        await aiQueue.add(
-            "document.extract",
-            {
-                documentId: document.id,
-            },
-            {
-                jobId: `document-ai-recovery-${document.id}-${Date.now()}`,
-            },
-        );
+        if (verified.length < documentPageSize) break;
+        documentOffset += verified.length;
     }
 };
 
