@@ -12,6 +12,7 @@ import {
 import {
     paypalDisputes,
     type PayPalDispute,
+    type PayPalDisputeAdapter,
 } from "../paypal/paypal.disputes.js";
 import { aiQueue } from "../../lib/queue.js";
 import { withRedisLock } from "../../lib/distributed-lock.js";
@@ -99,8 +100,9 @@ function containsExactString(value: unknown, target: string): boolean {
 export async function syncDispute(
     providerDisputeId: string,
     workspaceId?: string,
+    adapter: PayPalDisputeAdapter = paypalDisputes,
 ) {
-    const payload = await paypalDisputes.get(providerDisputeId);
+    const payload = await adapter.get(providerDisputeId);
     const existing = await db.query.disputes.findFirst({
         where: eq(disputes.providerDisputeId, providerDisputeId),
     });
@@ -111,6 +113,9 @@ export async function syncDispute(
             ? payload.disputed_transactions[0].seller_transaction_id
             : undefined;
 
+    if (existing?.workspaceId && workspaceId && existing.workspaceId !== workspaceId) {
+        throw new Error("PayPal dispute is already associated with a different workspace.");
+    }
     let inferredWorkspaceId = existing?.workspaceId ?? undefined;
     let linkedPaymentId = existing?.paymentId ?? undefined;
     let linkedInvoiceId = existing?.invoiceId ?? undefined;
@@ -246,6 +251,7 @@ export async function submitEvidence(input: {
     evidenceRequestId?: string;
     notes?: string;
     documents?: Array<{ id: string; workspaceId: string }>;
+    adapter?: PayPalDisputeAdapter;
 }) {
     return withRedisLock(
         `settle:paypal:evidence:${input.disputeId}:${input.evidenceType}`,
@@ -335,7 +341,8 @@ export async function submitEvidence(input: {
             // Recover safely if a previous process reached PayPal but crashed
             // before persisting the successful local submission. PayPal's
             // dispute representation is the external source of truth here.
-            const providerDispute = await paypalDisputes.get(
+            const adapter = input.adapter ?? paypalDisputes;
+            const providerDispute = await adapter.get(
                 input.providerDisputeId,
             );
             const existingProviderEvidence = (providerDispute.evidences ?? []).find(
@@ -384,7 +391,7 @@ export async function submitEvidence(input: {
                 const content = await downloadStoredObject(document.objectKey, requestedDocument.workspaceId);
                 files.push({ name: document.filename, contentType: document.contentType, content });
             }
-            const result = await paypalDisputes.provideEvidence(
+            const result = await adapter.provideEvidence(
                 input.providerDisputeId,
                 { evidence_type: input.evidenceType, notes: input.notes },
                 files,

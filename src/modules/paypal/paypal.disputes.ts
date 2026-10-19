@@ -1,4 +1,4 @@
-import { paypalClient } from "./paypal.client.js";
+import { paypalClient, PayPalClient } from "./paypal.client.js";
 
 export type PayPalDispute = {
     dispute_id: string;
@@ -22,8 +22,9 @@ export type PayPalDispute = {
 };
 
 export class PayPalDisputeAdapter {
+    constructor(private readonly client: PayPalClient = paypalClient) {}
     async listByTransaction(transactionId: string) {
-        return paypalClient.request<{ items: PayPalDispute[] }>(
+        return this.client.request<{ items: PayPalDispute[] }>(
             `/v1/customer/disputes?disputed_transaction_id=${encodeURIComponent(transactionId)}`,
         );
     }
@@ -44,7 +45,7 @@ export class PayPalDisputeAdapter {
                 params.set("next_page_token", token);
             }
 
-            const result = await paypalClient.request<{
+            const result = await this.client.request<{
                 items?: PayPalDispute[];
                 next_page_token?: string;
             }>(`/v1/customer/disputes?${params.toString()}`);
@@ -61,7 +62,7 @@ export class PayPalDisputeAdapter {
     }
 
     async get(disputeId: string) {
-        return paypalClient.request<PayPalDispute>(
+        return this.client.request<PayPalDispute>(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}`,
         );
     }
@@ -107,7 +108,7 @@ export class PayPalDisputeAdapter {
             parts.push(Buffer.from("\r\n"));
         });
         parts.push(Buffer.from(`--${boundary}--\r\n`));
-        return paypalClient.request(
+        return this.client.request(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}/provide-evidence`,
             {
                 method: "POST",
@@ -120,7 +121,7 @@ export class PayPalDisputeAdapter {
     }
 
     async sendMessage(disputeId: string, content: string) {
-        return paypalClient.request(
+        return this.client.request(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}/send-message`,
             {
                 method: "POST",
@@ -131,7 +132,7 @@ export class PayPalDisputeAdapter {
     }
 
     async makeOffer(disputeId: string, offer: Record<string, unknown>) {
-        return paypalClient.request(
+        return this.client.request(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}/make-offer`,
             {
                 method: "POST",
@@ -142,7 +143,7 @@ export class PayPalDisputeAdapter {
     }
 
     async acceptClaim(disputeId: string, payload: Record<string, unknown>) {
-        return paypalClient.request(
+        return this.client.request(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}/accept-claim`,
             {
                 method: "POST",
@@ -156,7 +157,7 @@ export class PayPalDisputeAdapter {
         disputeId: string,
         payload: Record<string, unknown>,
     ) {
-        return paypalClient.request(
+        return this.client.request(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}/provide-supporting-info`,
             {
                 method: "POST",
@@ -167,7 +168,7 @@ export class PayPalDisputeAdapter {
     }
 
     async appeal(disputeId: string, payload: Record<string, unknown>) {
-        return paypalClient.request(
+        return this.client.request(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}/appeal`,
             {
                 method: "POST",
@@ -178,7 +179,7 @@ export class PayPalDisputeAdapter {
     }
 
     async escalate(disputeId: string) {
-        return paypalClient.request(
+        return this.client.request(
             `/v1/customer/disputes/${encodeURIComponent(disputeId)}/escalate`,
             {
                 method: "POST",
@@ -189,3 +190,4 @@ export class PayPalDisputeAdapter {
 }
 
 export const paypalDisputes = new PayPalDisputeAdapter();
+export function workspacePayPalDisputes(client: PayPalClient) { return new PayPalDisputeAdapter(client); }

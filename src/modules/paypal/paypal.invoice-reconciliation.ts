@@ -1,8 +1,10 @@
-import { paypalInvoices } from "./paypal.invoices.js";
+import { workspacePayPalInvoices } from "./paypal.invoices.js";
+import { getWorkspacePayPalClient } from "./paypal.workspace.js";
 
 type PayPalInvoice = Record<string, unknown>;
 
 type ReconciliationInput = {
+    workspaceId?: string;
     reference?: string;
     recipientEmail?: string;
     amount?: string;
@@ -27,7 +29,9 @@ export async function findExistingPayPalInvoice(
         reference: input.reference,
     };
 
-    const result = (await paypalInvoices.search(searchPayload)) as Record<
+    if (!input.workspaceId) throw new PayPalInvoiceReconciliationError("Workspace is required for PayPal invoice reconciliation.");
+    const adapter = workspacePayPalInvoices(await getWorkspacePayPalClient(input.workspaceId));
+    const result = (await adapter.search(searchPayload)) as Record<
         string,
         unknown
     >;

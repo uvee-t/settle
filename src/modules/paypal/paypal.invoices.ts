@@ -1,20 +1,21 @@
-import { paypalClient } from "./paypal.client.js";
+import { paypalClient, PayPalClient } from "./paypal.client.js";
 
 export class PayPalInvoiceAdapter {
+    constructor(private readonly client: PayPalClient = paypalClient) {}
     async get(invoiceId: string) {
-        return paypalClient.request(
+        return this.client.request(
             `/v2/invoicing/invoices/${encodeURIComponent(invoiceId)}`,
         );
     }
 
     async list(params = "") {
-        return paypalClient.request(
+        return this.client.request(
             `/v2/invoicing/invoices${params ? `?${params}` : ""}`,
         );
     }
 
     async create(payload: Record<string, unknown>, requestId: string) {
-        const response = await paypalClient.request<{
+        const response = await this.client.request<{
             id?: string;
             href?: string;
             rel?: string;
@@ -47,7 +48,7 @@ export class PayPalInvoiceAdapter {
     }
 
     async send(invoiceId: string, payload: Record<string, unknown> = {}) {
-        return paypalClient.request(
+        return this.client.request(
             `/v2/invoicing/invoices/${encodeURIComponent(invoiceId)}/send`,
             {
                 method: "POST",
@@ -60,7 +61,7 @@ export class PayPalInvoiceAdapter {
     }
 
     async search(payload: Record<string, unknown>) {
-        return paypalClient.request("/v2/invoicing/search-invoices", {
+        return this.client.request("/v2/invoicing/search-invoices", {
             method: "POST",
             headers: {
                 "Content-Type": "application/json",
@@ -70,7 +71,7 @@ export class PayPalInvoiceAdapter {
     }
 
     async remind(invoiceId: string, payload: Record<string, unknown> = {}) {
-        return paypalClient.request(
+        return this.client.request(
             `/v2/invoicing/invoices/${encodeURIComponent(invoiceId)}/remind`,
             {
                 method: "POST",
@@ -83,7 +84,7 @@ export class PayPalInvoiceAdapter {
     }
 
     async cancel(invoiceId: string, payload: Record<string, unknown> = {}) {
-        return paypalClient.request(
+        return this.client.request(
             `/v2/invoicing/invoices/${encodeURIComponent(invoiceId)}/cancel`,
             {
                 method: "POST",
@@ -97,3 +98,4 @@ export class PayPalInvoiceAdapter {
 }
 
 export const paypalInvoices = new PayPalInvoiceAdapter();
+export function workspacePayPalInvoices(client: PayPalClient) { return new PayPalInvoiceAdapter(client); }

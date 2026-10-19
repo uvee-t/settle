@@ -21,7 +21,9 @@ import {
 } from "../modules/evidence/evidence-intelligence.service.js";
 
 import { evidencePacks, aiRuns } from "../db/schema/ai.js";
-import { paypalInvoices } from "../modules/paypal/paypal.invoices.js";
+import { workspacePayPalInvoices } from "../modules/paypal/paypal.invoices.js";
+import { getWorkspacePayPalClient } from "../modules/paypal/paypal.workspace.js";
+import { workspacePayPalDisputes } from "../modules/paypal/paypal.disputes.js";
 import { verifyStoredDocument } from "../modules/documents/document.service.js";
 
 import {
@@ -112,6 +114,10 @@ const webhookWorker = new Worker(
          * recover the original payload from webhook_events.
          */
         let payload = jobPayload;
+        const storedWebhookEvent = await db.query.webhookEvents.findFirst({
+            where: and(eq(webhookEvents.provider, "paypal"), eq(webhookEvents.providerEventId, eventId)),
+        });
+        const webhookWorkspaceId = storedWebhookEvent?.workspaceId ?? null;
 
         if (!payload) {
             logger.warn(
@@ -169,6 +175,7 @@ const webhookWorker = new Worker(
                                     invoices.providerInvoiceId,
                                     providerInvoiceId,
                                 ),
+                                webhookWorkspaceId ? eq(invoices.workspaceId, webhookWorkspaceId) : undefined,
                             ),
                         });
 
@@ -392,6 +399,7 @@ const webhookWorker = new Worker(
                              * sends an event before local reconciliation.
                              */
                             await tx.insert(invoices).values({
+                                workspaceId: webhookWorkspaceId ?? undefined,
                                 provider: "paypal",
 
                                 providerInvoiceId,
@@ -460,7 +468,12 @@ const webhookWorker = new Worker(
                 const disputeId = asString(dispute.dispute_id);
 
                 if (disputeId) {
-                    await syncDispute(disputeId);
+                    if (webhookWorkspaceId) {
+                        const client = await getWorkspacePayPalClient(webhookWorkspaceId);
+                        await syncDispute(disputeId, webhookWorkspaceId, workspacePayPalDisputes(client));
+                    } else {
+                        await syncDispute(disputeId);
+                    }
                 }
 
                 logger.info(
@@ -487,7 +500,7 @@ const webhookWorker = new Worker(
                         attempts: String(job.attemptsMade + 1),
                         lastError: null,
                     })
-                    .where(eq(webhookEvents.providerEventId, eventId));
+                    .where(and(eq(webhookEvents.providerEventId, eventId), webhookWorkspaceId ? eq(webhookEvents.workspaceId, webhookWorkspaceId) : undefined));
 
                 await tx
                     .update(outboxEvents)
@@ -678,7 +691,8 @@ const outboxWorker = new Worker(
                         invoice?.providerPayload &&
                         !invoice.providerInvoiceId
                     ) {
-                        const provider = await paypalInvoices.create(
+                        if (!invoice.workspaceId) throw new Error("Invoice is missing workspace ownership.");
+                        const provider = await workspacePayPalInvoices(await getWorkspacePayPalClient(invoice.workspaceId)).create(
                             invoice.providerPayload as Record<string, unknown>,
                             `settle-invoice-${invoice.id}`,
                         );
@@ -982,7 +996,8 @@ const reminderWorker = new Worker(
 
         if (locked !== "OK") return;
 
-        await paypalInvoices.remind(invoice.providerInvoiceId, {});
+        if (!invoice.workspaceId) throw new Error("Invoice is missing workspace ownership.");
+        await workspacePayPalInvoices(await getWorkspacePayPalClient(invoice.workspaceId)).remind(invoice.providerInvoiceId, {});
 
         try {
             await writeAudit({

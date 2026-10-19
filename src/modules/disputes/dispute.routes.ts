@@ -1,7 +1,8 @@
 import type { FastifyInstance } from "fastify";
 import { and, eq } from "drizzle-orm";
 import { z } from "zod";
-import { paypalDisputes } from "../paypal/paypal.disputes.js";
+import { workspacePayPalDisputes } from "../paypal/paypal.disputes.js";
+import { getWorkspacePayPalClient } from "../paypal/paypal.workspace.js";
 import { disputes } from "../../db/schema/disputes.js";
 import { requireRole, requireWorkspace } from "../auth/auth.plugin.js";
 import { db } from "../../db/client.js";
@@ -20,11 +21,11 @@ export async function disputeRoutes(app: FastifyInstance) {
                 .object({ transactionId: z.string().min(1) })
                 .parse(request.params);
 
-            const result =
-                await paypalDisputes.listByTransaction(transactionId);
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
+            const result = await adapter.listByTransaction(transactionId);
 
             for (const item of result.items ?? []) {
-                await syncDispute(item.dispute_id, request.auth!.workspaceId);
+                await syncDispute(item.dispute_id, request.auth!.workspaceId, adapter);
             }
 
             return result;
@@ -45,11 +46,12 @@ export async function disputeRoutes(app: FastifyInstance) {
         "/v1/disputes/sync",
         { preHandler: requireRole("owner", "admin", "member") },
         async (request) => {
-            const result = await paypalDisputes.listRecent();
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
+            const result = await adapter.listRecent();
             let synced = 0;
             for (const item of result.items ?? []) {
                 if (!item.dispute_id) continue;
-                await syncDispute(item.dispute_id, request.auth!.workspaceId!);
+                await syncDispute(item.dispute_id, request.auth!.workspaceId!, adapter);
                 synced++;
             }
             return { synced, imported: synced, items: result.items ?? [] };
@@ -62,9 +64,10 @@ export async function disputeRoutes(app: FastifyInstance) {
         async (request) => {
             const { disputeId } = idSchema.parse(request.params);
 
-            const provider = await paypalDisputes.get(disputeId);
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
+            const provider = await adapter.get(disputeId);
 
-            await syncDispute(disputeId, request.auth!.workspaceId);
+            await syncDispute(disputeId, request.auth!.workspaceId, adapter);
 
             const local = await db.query.disputes.findFirst({
                 where: and(
@@ -101,11 +104,13 @@ export async function disputeRoutes(app: FastifyInstance) {
                 throw new NotFoundError("Dispute not found in this workspace.");
             }
 
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
             const result = await submitEvidence({
                 disputeId: local.id,
                 providerDisputeId: local.providerDisputeId,
                 evidenceType: body.evidence_type,
                 notes: body.notes,
+                adapter,
             });
 
             await writeAudit({
@@ -128,6 +133,9 @@ export async function disputeRoutes(app: FastifyInstance) {
         { preHandler: requireRole("owner", "admin") },
         async (request) => {
             const { disputeId } = idSchema.parse(request.params);
+            const local = await db.query.disputes.findFirst({ where: and(eq(disputes.providerDisputeId, disputeId), eq(disputes.workspaceId, request.auth!.workspaceId!)) });
+            if (!local) throw new NotFoundError("Dispute not found in this workspace.");
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
 
             const body = z
                 .object({
@@ -135,7 +143,7 @@ export async function disputeRoutes(app: FastifyInstance) {
                 })
                 .parse(request.body);
 
-            return paypalDisputes.sendMessage(disputeId, body.content);
+            return adapter.sendMessage(disputeId, body.content);
         },
     );
 
@@ -144,8 +152,11 @@ export async function disputeRoutes(app: FastifyInstance) {
         { preHandler: requireRole("owner", "admin") },
         async (request) => {
             const { disputeId } = idSchema.parse(request.params);
+            const local = await db.query.disputes.findFirst({ where: and(eq(disputes.providerDisputeId, disputeId), eq(disputes.workspaceId, request.auth!.workspaceId!)) });
+            if (!local) throw new NotFoundError("Dispute not found in this workspace.");
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
 
-            return paypalDisputes.makeOffer(
+            return adapter.makeOffer(
                 disputeId,
                 request.body as Record<string, unknown>,
             );
@@ -157,8 +168,11 @@ export async function disputeRoutes(app: FastifyInstance) {
         { preHandler: requireRole("owner", "admin") },
         async (request) => {
             const { disputeId } = idSchema.parse(request.params);
+            const local = await db.query.disputes.findFirst({ where: and(eq(disputes.providerDisputeId, disputeId), eq(disputes.workspaceId, request.auth!.workspaceId!)) });
+            if (!local) throw new NotFoundError("Dispute not found in this workspace.");
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
 
-            return paypalDisputes.acceptClaim(
+            return adapter.acceptClaim(
                 disputeId,
                 request.body as Record<string, unknown>,
             );
@@ -170,8 +184,11 @@ export async function disputeRoutes(app: FastifyInstance) {
         { preHandler: requireRole("owner", "admin") },
         async (request) => {
             const { disputeId } = idSchema.parse(request.params);
+            const local = await db.query.disputes.findFirst({ where: and(eq(disputes.providerDisputeId, disputeId), eq(disputes.workspaceId, request.auth!.workspaceId!)) });
+            if (!local) throw new NotFoundError("Dispute not found in this workspace.");
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
 
-            return paypalDisputes.provideSupportingInfo(
+            return adapter.provideSupportingInfo(
                 disputeId,
                 request.body as Record<string, unknown>,
             );
@@ -183,8 +200,11 @@ export async function disputeRoutes(app: FastifyInstance) {
         { preHandler: requireRole("owner", "admin") },
         async (request) => {
             const { disputeId } = idSchema.parse(request.params);
+            const local = await db.query.disputes.findFirst({ where: and(eq(disputes.providerDisputeId, disputeId), eq(disputes.workspaceId, request.auth!.workspaceId!)) });
+            if (!local) throw new NotFoundError("Dispute not found in this workspace.");
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
 
-            return paypalDisputes.appeal(
+            return adapter.appeal(
                 disputeId,
                 request.body as Record<string, unknown>,
             );
@@ -196,8 +216,11 @@ export async function disputeRoutes(app: FastifyInstance) {
         { preHandler: requireRole("owner", "admin") },
         async (request) => {
             const { disputeId } = idSchema.parse(request.params);
+            const local = await db.query.disputes.findFirst({ where: and(eq(disputes.providerDisputeId, disputeId), eq(disputes.workspaceId, request.auth!.workspaceId!)) });
+            if (!local) throw new NotFoundError("Dispute not found in this workspace.");
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
 
-            return paypalDisputes.escalate(disputeId);
+            return adapter.escalate(disputeId);
         },
     );
 }

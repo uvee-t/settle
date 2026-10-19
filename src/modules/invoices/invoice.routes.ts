@@ -8,7 +8,8 @@ import { clients, contracts } from "../../db/schema/core.js";
 
 import { requireRole, requireWorkspace } from "../auth/auth.plugin.js";
 
-import { paypalInvoices } from "../paypal/paypal.invoices.js";
+import { workspacePayPalInvoices } from "../paypal/paypal.invoices.js";
+import { getWorkspacePayPalClient } from "../paypal/paypal.workspace.js";
 
 import { writeAudit } from "../../lib/audit.js";
 
@@ -529,7 +530,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
                      * PayPal-Request-Id makes this create operation
                      * idempotent on the provider side.
                      */
-                    provider = await paypalInvoices.create(
+                    provider = await workspacePayPalInvoices(await getWorkspacePayPalClient(request.auth!.workspaceId!)).create(
                         paypalPayload,
                         `settle-invoice-${invoice.id}`,
                     );
@@ -556,6 +557,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
                      */
                     if (!providerInvoiceId) {
                         const existing = await findExistingPayPalInvoice({
+                            workspaceId: request.auth!.workspaceId!,
                             reference: invoice.reference ?? undefined,
 
                             amount: invoice.amount,
@@ -581,6 +583,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
                     }
 
                     const existing = await findExistingPayPalInvoice({
+                        workspaceId: request.auth!.workspaceId!,
                         reference: invoice.reference ?? undefined,
 
                         amount: invoice.amount,
@@ -647,7 +650,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
             /*
              * Send the already-created PayPal invoice.
              */
-            const sendResponse = await paypalInvoices.send(
+            const sendResponse = await workspacePayPalInvoices(await getWorkspacePayPalClient(request.auth!.workspaceId!)).send(
                 providerInvoiceId,
                 request.body as Record<string, unknown>,
             );
@@ -727,7 +730,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
                 );
             }
 
-            await paypalInvoices.remind(
+            await workspacePayPalInvoices(await getWorkspacePayPalClient(request.auth!.workspaceId!)).remind(
                 invoice.providerInvoiceId,
                 request.body as Record<string, unknown>,
             );
@@ -869,7 +872,7 @@ export async function invoiceRoutes(app: FastifyInstance) {
             }
 
             if (invoice.providerInvoiceId) {
-                await paypalInvoices.cancel(
+                await workspacePayPalInvoices(await getWorkspacePayPalClient(request.auth!.workspaceId!)).cancel(
                     invoice.providerInvoiceId,
                     request.body as Record<string, unknown>,
                 );

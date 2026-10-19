@@ -22,6 +22,8 @@ import { evidenceRoutes } from "./modules/evidence/evidence.routes.js";
 import { metaRoutes } from "./modules/meta/meta.routes.js";
 import { paymentRoutes } from "./modules/payments/payment.routes.js";
 import { aiRoutes } from "./modules/ai/ai.routes.js";
+import { paypalConnectionRoutes } from "./modules/paypal/paypal-connection.routes.js";
+import { paypalReportingRoutes } from "./modules/paypal/paypal-reporting.routes.js";
 
 const app = Fastify({
     loggerInstance: logger,
@@ -112,6 +114,8 @@ await app.register(clientRoutes);
 await app.register(contractRoutes);
 await app.register(deliveryRoutes);
 await app.register(invoiceRoutes);
+await app.register(paypalConnectionRoutes);
+await app.register(paypalReportingRoutes);
 await app.register(paymentRoutes);
 await app.register(aiRoutes);
 await app.register(documentRoutes);

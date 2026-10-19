@@ -15,6 +15,7 @@ const schema = z.object({
     PAYPAL_CLIENT_ID: z.string().optional(),
     PAYPAL_CLIENT_SECRET: z.string().optional(),
     PAYPAL_WEBHOOK_ID: z.string().optional(),
+    PAYPAL_CREDENTIALS_ENCRYPTION_KEY: z.string().optional(),
 
     CORS_ORIGIN: z.string().default("http://localhost:5173"),
 
@@ -116,14 +117,8 @@ export const env = parsed.data;
 if (env.NODE_ENV === "production") {
     if (!env.AUTH_JWT_SECRET)
         throw new Error("AUTH_JWT_SECRET is required in production.");
-    if (
-        !env.PAYPAL_CLIENT_ID ||
-        !env.PAYPAL_CLIENT_SECRET ||
-        !env.PAYPAL_WEBHOOK_ID
-    ) {
-        throw new Error(
-            "PayPal credentials and PAYPAL_WEBHOOK_ID are required in production.",
-        );
+    if (!env.PAYPAL_CREDENTIALS_ENCRYPTION_KEY || Buffer.byteLength(env.PAYPAL_CREDENTIALS_ENCRYPTION_KEY, "utf8") !== 32) {
+        throw new Error("PAYPAL_CREDENTIALS_ENCRYPTION_KEY must be exactly 32 UTF-8 bytes in production.");
     }
     if (env.PAYPAL_BASE_URL.includes("sandbox")) {
         throw new Error("Production cannot use the PayPal Sandbox API.");

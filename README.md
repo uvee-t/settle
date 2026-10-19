@@ -194,3 +194,8 @@ For DOCX uploads, make sure `DOCUMENT_ALLOWED_CONTENT_TYPES` in your local envir
 5. Open a case, upload a DOCX/PDF, wait for the document to show **Verified**, attach it, approve the evidence pack, and submit. Confirm the returned PayPal response and refresh the case.
 
 The frontend production build was verified during preparation. Full backend type-check/build and end-to-end Sandbox submission could not be verified in this environment because backend dependencies were incomplete and PayPal/S3 credentials are environment-specific; run the steps above locally before relying on this flow.
+
+
+## Fresh database
+
+For a brand-new empty database, see [`FRESH_DATABASE_SETUP.md`](./FRESH_DATABASE_SETUP.md) and use `npm run db:migrate:fresh`. Do not use the fresh baseline against an existing database.

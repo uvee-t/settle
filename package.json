@@ -1,6 +1,6 @@
 {
   "name": "settle-backend",
-  "version": "0.13.0",
+  "version": "0.16.1",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,7 +16,8 @@
     "frontend:dev": "npm --prefix frontend run dev",
     "check": "npm run build && npm test && npm run frontend:build",
     "frontend:build": "npm --prefix frontend run build",
-    "frontend:preview": "npm --prefix frontend run preview"
+    "frontend:preview": "npm --prefix frontend run preview",
+    "db:migrate:fresh": "drizzle-kit migrate --config=drizzle.fresh.config.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

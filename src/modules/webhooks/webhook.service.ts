@@ -2,7 +2,9 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { webhookEvents } from "../../db/schema/webhook-events.js";
 import { enqueueOutbox } from "../../lib/outbox.js";
-import { paypalClient } from "../paypal/paypal.client.js";
+import { paypalClient, PayPalClient } from "../paypal/paypal.client.js";
+import { paypalAccounts } from "../../db/schema/paypal.js";
+import { decryptSecret } from "../paypal/paypal.workspace.js";
 import { env } from "../../config/env.js";
 import { AppError } from "../../lib/errors.js";
 
@@ -19,21 +21,46 @@ export async function verifyAndIngestPayPalWebhook(
     return Array.isArray(value) ? value[0] : value;
   };
 
-  if (!env.PAYPAL_WEBHOOK_ID) {
-    throw new Error("PAYPAL_WEBHOOK_ID is not configured");
-  }
+  let verifiedWorkspaceId: string | null = null;
+  let signatureVerified = false;
+  const connectedAccounts = await db.query.paypalAccounts.findMany();
+  const accountsWithWebhook = connectedAccounts.filter((account) =>
+    account.connectionStatus === "CONNECTED" && account.clientIdEncrypted && account.clientSecretEncrypted && account.webhookIdEncrypted,
+  );
 
-  const verification = await paypalClient.verifyWebhookSignature({
+  const verificationInput = {
     auth_algo: get("paypal-auth-algo") ?? "",
     cert_url: get("paypal-cert-url") ?? "",
     transmission_id: get("paypal-transmission-id") ?? "",
     transmission_sig: get("paypal-transmission-sig") ?? "",
     transmission_time: get("paypal-transmission-time") ?? "",
-    webhook_id: env.PAYPAL_WEBHOOK_ID,
     webhook_event: payload,
-  });
+  };
 
-  if (verification.verification_status !== "SUCCESS") {
+  if (accountsWithWebhook.length) {
+    for (const account of accountsWithWebhook) {
+      try {
+        const baseUrl = account.environment === "live" ? "https://api-m.paypal.com" : "https://api-m.sandbox.paypal.com";
+        const client = new PayPalClient(decryptSecret(account.clientIdEncrypted!), decryptSecret(account.clientSecretEncrypted!), baseUrl);
+        const verification = await client.verifyWebhookSignature({ ...verificationInput, webhook_id: decryptSecret(account.webhookIdEncrypted!) });
+        if (verification.verification_status === "SUCCESS") {
+          verifiedWorkspaceId = account.workspaceId;
+          signatureVerified = true;
+          break;
+        }
+      } catch {
+        // Continue checking other connected workspace webhook registrations without logging credentials.
+      }
+    }
+  } else if (connectedAccounts.every((account) => account.connectionStatus !== "CONNECTED") && env.PAYPAL_WEBHOOK_ID) {
+    const verification = await paypalClient.verifyWebhookSignature({ ...verificationInput, webhook_id: env.PAYPAL_WEBHOOK_ID });
+    if (verification.verification_status === "SUCCESS") { verifiedWorkspaceId = null; signatureVerified = true; }
+  }
+
+  if (!signatureVerified) {
+    if ((!env.PAYPAL_WEBHOOK_ID || connectedAccounts.some((account) => account.connectionStatus === "CONNECTED")) && accountsWithWebhook.length === 0) {
+      throw new Error("No PayPal webhook configuration is available.");
+    }
     throw new AppError("WEBHOOK_SIGNATURE_INVALID", "Invalid PayPal webhook signature.", 400);
   }
 
@@ -42,6 +69,7 @@ export async function verifyAndIngestPayPalWebhook(
       .insert(webhookEvents)
       .values({
         provider: "paypal",
+        workspaceId: verifiedWorkspaceId,
         providerEventId: eventId,
         eventType,
         payload,
@@ -71,7 +99,7 @@ export async function verifyAndIngestPayPalWebhook(
       topic: "paypal.webhook",
       aggregateType: "webhook_event",
       aggregateId: webhookId,
-      payload: { webhookEventId: webhookId, eventId, eventType },
+      payload: { webhookEventId: webhookId, eventId, eventType, workspaceId: verifiedWorkspaceId },
     });
 
     return { duplicate, eventId, webhookId };
