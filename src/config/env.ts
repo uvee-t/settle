@@ -68,7 +68,7 @@ const schema = z.object({
     DOCUMENT_ALLOWED_CONTENT_TYPES: z
         .string()
         .default(
-            "application/pdf,image/png,image/jpeg,image/gif,text/plain,text/csv,application/json",
+            "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/gif,text/plain,text/csv,application/json",
         ),
     DOCUMENT_MALWARE_SCAN_ENABLED: z.preprocess(
         (value) =>
@@ -128,7 +128,7 @@ if (env.NODE_ENV === "production") {
     if (env.PAYPAL_BASE_URL.includes("sandbox")) {
         throw new Error("Production cannot use the PayPal Sandbox API.");
     }
-    if (env.CORS_ORIGIN === "http://localhost:3000") {
+    if (env.CORS_ORIGIN === "http://localhost:5173") {
         throw new Error(
             "CORS_ORIGIN must be explicitly configured in production.",
         );

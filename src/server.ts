@@ -38,7 +38,20 @@ const app = Fastify({
 });
 
 await app.register(helmet);
-await app.register(cors, { origin: env.CORS_ORIGIN, credentials: true });
+const configuredCorsOrigins = env.CORS_ORIGIN.split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean);
+await app.register(cors, {
+    origin: configuredCorsOrigins,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "HEAD"],
+    allowedHeaders: [
+        "Content-Type",
+        "Authorization",
+        "Idempotency-Key",
+        "X-Workspace-Id",
+    ],
+    credentials: true,
+});
 await app.register(rateLimit, {
     max: env.API_RATE_LIMIT_MAX,
     timeWindow: env.API_RATE_LIMIT_WINDOW,
