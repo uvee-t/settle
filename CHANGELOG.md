@@ -1,3 +1,14 @@
+# v0.13.0 — Reliability
+
+- Durable webhook/outbox dispatch state now uses `QUEUED` until the worker actually completes processing.
+- Added stale webhook recovery that checks the BullMQ job state before requeueing.
+- Added persistent dead-letter records for permanently failed webhook/outbox jobs.
+- BullMQ failed/completed jobs are removed before durable retry so deterministic job IDs do not block recovery.
+- Outbox failures remain queued during transient BullMQ retries and become `DEAD_LETTERED` only after final failure.
+- Webhook success/failure updates now reconcile the corresponding durable outbox record.
+- Added migration `0012_reliability_hardening`.
+- Removed runtime `.env` from the release and added `.env.example`.
+
 ## 0.12.0
 
 - Added Redis-backed concurrency locks for AI defense generation and PayPal evidence submission.

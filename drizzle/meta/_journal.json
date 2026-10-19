@@ -36,6 +36,13 @@
       "when": 1791477427636,
       "tag": "0011_dispute_transaction_reconciliation",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1791550000000,
+      "tag": "0012_reliability_hardening",
+      "breakpoints": true
     }
   ]
 }

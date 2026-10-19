@@ -10,6 +10,7 @@ import { webhookEvents } from "../db/schema/webhook-events.js";
 import { invoices } from "../db/schema/invoices.js";
 import { payments, documents } from "../db/schema/core.js";
 import { outboxEvents } from "../db/schema/outbox.js";
+import { deadLetterJobs } from "../db/schema/dead-letter.js";
 
 import { syncDispute } from "../modules/disputes/dispute.service.js";
 import { extractContractFacts } from "../modules/ai/ai.service.js";
@@ -48,6 +49,31 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
     return typeof value === "string" ? value : undefined;
+}
+
+async function recordDeadLetter(input: {
+    queue: string;
+    jobId: string;
+    sourceType: string;
+    sourceId: string;
+    payload: unknown;
+    error: unknown;
+    attempts: number;
+}) {
+    await db
+        .insert(deadLetterJobs)
+        .values({
+            queue: input.queue,
+            jobId: input.jobId,
+            sourceType: input.sourceType,
+            sourceId: input.sourceId,
+            payload: input.payload,
+            error: input.error instanceof Error
+                ? input.error.message.slice(0, 2000)
+                : String(input.error).slice(0, 2000),
+            attempts: String(input.attempts),
+        })
+        .onConflictDoNothing();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -451,15 +477,37 @@ const webhookWorker = new Worker(
             /* Mark webhook event as processed                                    */
             /* ------------------------------------------------------------------ */
 
-            await db
-                .update(webhookEvents)
-                .set({
-                    status: "PROCESSED",
-                    processedAt: new Date(),
-                    attempts: String(job.attemptsMade + 1),
-                    lastError: null,
-                })
-                .where(eq(webhookEvents.providerEventId, eventId));
+            await db.transaction(async (tx) => {
+                await tx
+                    .update(webhookEvents)
+                    .set({
+                        status: "PROCESSED",
+                        processedAt: new Date(),
+                        attempts: String(job.attemptsMade + 1),
+                        lastError: null,
+                    })
+                    .where(eq(webhookEvents.providerEventId, eventId));
+
+                await tx
+                    .update(outboxEvents)
+                    .set({
+                        status: "PROCESSED",
+                        processedAt: new Date(),
+                        lastError: null,
+                    })
+                    .where(
+                        and(
+                            eq(outboxEvents.topic, "paypal.webhook"),
+                            eq(outboxEvents.aggregateType, "webhook_event"),
+                            eq(outboxEvents.aggregateId, (await tx.query.webhookEvents.findFirst({
+                                where: and(
+                                    eq(webhookEvents.provider, "paypal"),
+                                    eq(webhookEvents.providerEventId, eventId),
+                                ),
+                            }))!.id),
+                        ),
+                    );
+            });
 
             logger.info(
                 {
@@ -470,18 +518,63 @@ const webhookWorker = new Worker(
                 "Webhook job completed successfully",
             );
         } catch (error) {
-            const finalAttempt =
-                job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+            const attempt = job.attemptsMade + 1;
+            const finalAttempt = attempt >= (job.opts.attempts ?? 1);
+            const message = error instanceof Error ? error.message : String(error);
 
-            await db
-                .update(webhookEvents)
-                .set({
-                    status: finalAttempt ? "FAILED" : "RECEIVED",
-                    attempts: String(job.attemptsMade + 1),
-                    lastError:
-                        error instanceof Error ? error.message : String(error),
-                })
-                .where(eq(webhookEvents.providerEventId, eventId));
+            await db.transaction(async (tx) => {
+                const stored = await tx.query.webhookEvents.findFirst({
+                    where: and(
+                        eq(webhookEvents.provider, "paypal"),
+                        eq(webhookEvents.providerEventId, eventId),
+                    ),
+                });
+
+                if (!stored) return;
+
+                await tx
+                    .update(webhookEvents)
+                    .set({
+                        status: finalAttempt ? "FAILED" : "RECEIVED",
+                        attempts: String(attempt),
+                        lastError: message.slice(0, 2000),
+                    })
+                    .where(eq(webhookEvents.id, stored.id));
+
+                if (finalAttempt) {
+                    await tx
+                        .update(outboxEvents)
+                        .set({
+                            status: "DEAD_LETTERED",
+                            lastError: message.slice(0, 2000),
+                            availableAt: new Date(),
+                        })
+                        .where(
+                            and(
+                                eq(outboxEvents.topic, "paypal.webhook"),
+                                eq(outboxEvents.aggregateType, "webhook_event"),
+                                eq(outboxEvents.aggregateId, stored.id),
+                            ),
+                        );
+                }
+            });
+
+            if (finalAttempt) {
+                await recordDeadLetter({
+                    queue: "settle-webhooks",
+                    jobId: String(job.id),
+                    sourceType: "webhook_event",
+                    sourceId: (await db.query.webhookEvents.findFirst({
+                        where: and(
+                            eq(webhookEvents.provider, "paypal"),
+                            eq(webhookEvents.providerEventId, eventId),
+                        ),
+                    }))!.id,
+                    payload,
+                    error,
+                    attempts: attempt,
+                });
+            }
 
             logger.error(
                 {
@@ -616,25 +709,45 @@ const outboxWorker = new Worker(
                 }
             }
 
+            const attempt = Number(event.attempts) + 1;
+
             await db
                 .update(outboxEvents)
                 .set({
                     status: "PROCESSED",
                     processedAt: new Date(),
-                    attempts: String(job.attemptsMade + 1),
+                    attempts: String(attempt),
                     lastError: null,
                 })
                 .where(eq(outboxEvents.id, outboxId));
         } catch (error) {
+            const attempt = Number(event.attempts) + 1;
+            const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+            const message = error instanceof Error ? error.message : String(error);
+
             await db
                 .update(outboxEvents)
                 .set({
-                    status: "FAILED",
-                    attempts: String(job.attemptsMade + 1),
-                    lastError:
-                        error instanceof Error ? error.message : String(error),
+                    status: finalAttempt ? "DEAD_LETTERED" : "QUEUED",
+                    attempts: String(attempt),
+                    lastError: message.slice(0, 2000),
+                    availableAt: finalAttempt
+                        ? new Date(Date.now() + 5 * 60_000)
+                        : new Date(),
                 })
                 .where(eq(outboxEvents.id, outboxId));
+
+            if (finalAttempt) {
+                await recordDeadLetter({
+                    queue: "settle-outbox",
+                    jobId: String(job.id),
+                    sourceType: "outbox_event",
+                    sourceId: outboxId,
+                    payload: event.payload,
+                    error,
+                    attempts: attempt,
+                });
+            }
 
             throw error;
         }
@@ -714,7 +827,7 @@ const recoverWebhookOutbox = async () => {
     for (const event of events) {
         if (event.receivedAt > cutoff) continue;
 
-        const existingOutbox = await db.query.outboxEvents.findFirst({
+        let existingOutbox = await db.query.outboxEvents.findFirst({
             where: and(
                 eq(outboxEvents.topic, "paypal.webhook"),
                 eq(outboxEvents.aggregateType, "webhook_event"),
@@ -722,17 +835,8 @@ const recoverWebhookOutbox = async () => {
             ),
         });
 
-        if (existingOutbox && existingOutbox.status !== "PENDING") {
-            await db
-                .update(outboxEvents)
-                .set({
-                    status: "PENDING",
-                    processedAt: null,
-                    lastError: "Webhook recovery requeued stale event",
-                })
-                .where(eq(outboxEvents.id, existingOutbox.id));
-        } else if (!existingOutbox) {
-            await db
+        if (!existingOutbox) {
+            const [created] = await db
                 .insert(outboxEvents)
                 .values({
                     topic: "paypal.webhook",
@@ -744,64 +848,105 @@ const recoverWebhookOutbox = async () => {
                         eventType: event.eventType,
                     },
                 })
-                .onConflictDoNothing();
+                .onConflictDoNothing()
+                .returning();
+            existingOutbox = created;
         }
+
+        if (!existingOutbox || existingOutbox.status === "DEAD_LETTERED") {
+            continue;
+        }
+
+        if (existingOutbox.status === "QUEUED") {
+            const job = await webhookQueue.getJob(`webhook-${event.id}`);
+            if (job) {
+                const state = await job.getState();
+                if (["waiting", "delayed", "active"].includes(state)) {
+                    continue;
+                }
+            }
+        }
+
+        await db
+            .update(outboxEvents)
+            .set({
+                status: "PENDING",
+                processedAt: null,
+                availableAt: new Date(),
+                lastError: "Webhook recovery requeued stale delivery",
+            })
+            .where(eq(outboxEvents.id, existingOutbox.id));
     }
 };
 
-void recoverWebhookOutbox();
+void recoverWebhookOutbox().catch((error) =>
+    logger.error({ err: error }, "Webhook recovery failed"),
+);
 
 const webhookRecoveryInterval = setInterval(
-    () => void recoverWebhookOutbox(),
+    () =>
+        void recoverWebhookOutbox().catch((error) =>
+            logger.error({ err: error }, "Webhook recovery failed"),
+        ),
     60 * 1000,
 );
 
 const dispatcher = setInterval(async () => {
     try {
         const pending = await db.query.outboxEvents.findMany({
-            where: eq(outboxEvents.status, "PENDING"),
+            where: and(
+                inArray(outboxEvents.status, ["PENDING", "FAILED"]),
+                lte(outboxEvents.availableAt, new Date()),
+            ),
             limit: 100,
         });
 
         for (const event of pending) {
+            const queue =
+                event.topic === "paypal.webhook" ? webhookQueue : outboxQueue;
+            const jobId =
+                event.topic === "paypal.webhook"
+                    ? `webhook-${event.aggregateId}`
+                    : `outbox-${event.id}`;
+
+            const existingJob = await queue.getJob(jobId);
+            if (existingJob) {
+                const state = await existingJob.getState();
+
+                if (["waiting", "delayed", "active", "paused"].includes(state)) {
+                    await db
+                        .update(outboxEvents)
+                        .set({ status: "QUEUED" })
+                        .where(eq(outboxEvents.id, event.id));
+                    continue;
+                }
+
+                await existingJob.remove().catch(() => undefined);
+            }
+
             if (event.topic === "paypal.webhook") {
                 await webhookQueue.add("paypal.webhook", event.payload, {
-                    jobId: `webhook-${event.aggregateId}`,
+                    jobId,
                 });
             } else {
                 await outboxQueue.add(
                     event.topic,
-                    {
-                        outboxId: event.id,
-                    },
-                    {
-                        jobId: `outbox-${event.id}`,
-                    },
+                    { outboxId: event.id },
+                    { jobId },
                 );
             }
 
             await db
                 .update(outboxEvents)
                 .set({
-                    status:
-                        event.topic === "paypal.webhook"
-                            ? "PROCESSED"
-                            : "QUEUED",
-
-                    processedAt:
-                        event.topic === "paypal.webhook"
-                            ? new Date()
-                            : undefined,
+                    status: "QUEUED",
+                    processedAt: null,
+                    availableAt: new Date(),
                 })
                 .where(eq(outboxEvents.id, event.id));
         }
     } catch (error) {
-        logger.error(
-            {
-                err: error,
-            },
-            "Outbox dispatcher failed",
-        );
+        logger.error({ err: error }, "Outbox dispatcher failed");
     }
 }, 1000);
 
