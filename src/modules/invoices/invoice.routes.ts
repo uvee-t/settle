@@ -72,7 +72,9 @@ const transitions: Record<string, string[]> = {
 };
 
 function total(items: Array<{ quantity: string; unit_amount: string }>) {
-    return sumMoney(items.map((item) => multiplyMoney(item.quantity, item.unit_amount)));
+    return sumMoney(
+        items.map((item) => multiplyMoney(item.quantity, item.unit_amount)),
+    );
 }
 
 export async function invoiceRoutes(app: FastifyInstance) {
@@ -263,7 +265,10 @@ export async function invoiceRoutes(app: FastifyInstance) {
 
                             unitAmount: item.unit_amount,
 
-                            amount: multiplyMoney(item.quantity, item.unit_amount),
+                            amount: multiplyMoney(
+                                item.quantity,
+                                item.unit_amount,
+                            ),
                         });
                     }
 
@@ -434,17 +439,26 @@ export async function invoiceRoutes(app: FastifyInstance) {
                 throw new ValidationError("Invoice has no line items.");
             }
 
-            let providerInvoiceId = invoice.providerInvoiceId;
-            let providerPayload = invoice.rawPayload;
+            /*
+             * If we already have a PayPal invoice ID locally,
+             * never create another PayPal invoice.
+             */
+            let providerInvoiceId: string | null = invoice.providerInvoiceId;
+
+            let providerPayload: unknown = invoice.rawPayload;
 
             /*
-             * Create the PayPal invoice if it does not exist yet.
-             *
-             * We prefer an explicitly supplied providerPayload when
-             * one was stored during invoice creation. Otherwise,
-             * construct the PayPal payload from the local invoice.
+             * Create/reconcile the PayPal invoice if we don't
+             * already have a provider invoice ID.
              */
             if (!providerInvoiceId) {
+                /*
+                 * Prefer an explicitly supplied PayPal payload when
+                 * one was stored during invoice creation.
+                 *
+                 * Otherwise construct the payload from the local
+                 * Settle invoice source of truth.
+                 */
                 const suppliedPayload =
                     invoice.providerPayload &&
                     typeof invoice.providerPayload === "object" &&
@@ -457,11 +471,15 @@ export async function invoiceRoutes(app: FastifyInstance) {
                         detail: {
                             invoice_number:
                                 invoice.invoiceNumber ?? `SETTLE-${invoice.id}`,
+
                             reference: invoice.reference ?? undefined,
+
                             currency_code: invoice.currency.toUpperCase(),
+
                             payment_term: invoice.dueAt
                                 ? {
                                       term_type: "DUE_ON_DATE_SPECIFIED",
+
                                       due_date: invoice.dueAt
                                           .toISOString()
                                           .slice(0, 10),
@@ -475,9 +493,11 @@ export async function invoiceRoutes(app: FastifyInstance) {
                             {
                                 billing_info: {
                                     email_address: client.email,
+
                                     name: {
                                         full_name: client.name,
                                     },
+
                                     ...(client.companyName
                                         ? {
                                               business_name: client.companyName,
@@ -489,89 +509,137 @@ export async function invoiceRoutes(app: FastifyInstance) {
 
                         items: items.map((item) => ({
                             name: item.description,
+
                             quantity: item.quantity,
+
                             unit_amount: {
                                 currency_code: invoice.currency.toUpperCase(),
+
                                 value: item.unitAmount,
                             },
                         })),
                     };
 
-                let provider: unknown;
+                let provider: unknown = null;
 
                 try {
+                    /*
+                     * PayPal-Request-Id makes this create operation
+                     * idempotent on the provider side.
+                     */
                     provider = await paypalInvoices.create(
                         paypalPayload,
                         `settle-invoice-${invoice.id}`,
                     );
+
+                    const providerRecord = provider as Record<string, unknown>;
+
+                    providerInvoiceId =
+                        typeof providerRecord.id === "string"
+                            ? providerRecord.id
+                            : null;
+
+                    /*
+                     * PayPal's successful create response can contain
+                     * only:
+                     *
+                     * {
+                     *   rel: "self",
+                     *   href: ".../invoices/INV-...",
+                     *   method: "GET"
+                     * }
+                     *
+                     * The adapter now normalizes that response and
+                     * exposes `id`, so this is primarily a safety net.
+                     */
+                    if (!providerInvoiceId) {
+                        const existing = await findExistingPayPalInvoice({
+                            reference: invoice.reference ?? undefined,
+
+                            amount: invoice.amount,
+
+                            currency: invoice.currency,
+                        });
+
+                        if (existing && typeof existing.id === "string") {
+                            provider = existing;
+                            providerInvoiceId = existing.id;
+                        }
+                    }
                 } catch (error) {
-                    if (
-                        !(error instanceof ExternalServiceError) ||
-                        error.code !== "PAYPAL_REQUEST_FAILED"
-                    ) {
+                    /*
+                     * A provider request can fail after PayPal has
+                     * actually created the invoice.
+                     *
+                     * Reconcile before returning an error so that
+                     * retries do not create duplicate invoices.
+                     */
+                    if (!(error instanceof ExternalServiceError)) {
                         throw error;
                     }
 
-                    request.log.warn(
-                        {
-                            invoiceId: invoice.id,
-                            reference: invoice.reference,
-                        },
-                        "PayPal invoice creation had an ambiguous network failure; attempting reconciliation",
-                    );
-
-                    const recovered = await findExistingPayPalInvoice({
+                    const existing = await findExistingPayPalInvoice({
                         reference: invoice.reference ?? undefined,
-                        recipientEmail: client.email,
+
                         amount: invoice.amount,
+
                         currency: invoice.currency,
                     });
 
-                    if (!recovered) {
+                    if (!existing || typeof existing.id !== "string") {
                         throw error;
                     }
 
-                    request.log.info(
-                        {
-                            invoiceId: invoice.id,
-                            providerInvoiceId: recovered.id,
-                        },
-                        "Recovered existing PayPal invoice after ambiguous creation failure",
-                    );
-
-                    provider = recovered;
+                    provider = existing;
+                    providerInvoiceId = existing.id;
                 }
 
-                const providerRecord = provider as Record<string, unknown>;
-
-                providerInvoiceId =
-                    typeof providerRecord.id === "string"
-                        ? providerRecord.id
-                        : null;
-
+                /*
+                 * At this point PayPal must have given us an invoice ID
+                 * either directly or through reconciliation.
+                 */
                 if (!providerInvoiceId) {
                     throw new ValidationError(
-                        "PayPal did not return an invoice ID.",
+                        "PayPal invoice could not be created or reconciled.",
                     );
                 }
+
+                /*
+                 * TypeScript now knows this is definitely a string.
+                 */
+                const resolvedProviderInvoiceId = providerInvoiceId;
 
                 providerPayload = provider;
 
                 /*
                  * Persist the provider invoice immediately.
                  *
-                 * This is important: if the subsequent send request
-                 * fails, a retry will reuse this PayPal invoice instead
-                 * of creating another one.
+                 * If the subsequent send request fails, a retry will
+                 * reuse this PayPal invoice instead of creating another.
                  */
                 await db
                     .update(invoices)
                     .set({
-                        providerInvoiceId,
+                        providerInvoiceId: resolvedProviderInvoiceId,
+
                         rawPayload: provider,
+
                         updatedAt: new Date(),
                     })
                     .where(eq(invoices.id, invoice.id));
+
+                /*
+                 * Keep the narrowed value for the send operation.
+                 */
+                providerInvoiceId = resolvedProviderInvoiceId;
+            }
+
+            /*
+             * Final invariant:
+             * providerInvoiceId must exist before we call PayPal.
+             */
+            if (!providerInvoiceId) {
+                throw new ValidationError("PayPal invoice ID is missing.");
             }
 
             /*
@@ -591,8 +659,11 @@ export async function invoiceRoutes(app: FastifyInstance) {
                 .update(invoices)
                 .set({
                     status: "sent",
+
                     sentAt: new Date(),
+
                     rawPayload: combinedPayload,
+
                     updatedAt: new Date(),
                 })
                 .where(eq(invoices.id, id))
@@ -714,7 +785,9 @@ export async function invoiceRoutes(app: FastifyInstance) {
             }
 
             if (["paid", "refunded"].includes(body.status)) {
-                throw new ValidationError("Paid and refunded invoice states are provider-driven and cannot be set manually.");
+                throw new ValidationError(
+                    "Paid and refunded invoice states are provider-driven and cannot be set manually.",
+                );
             }
 
             if (!transitions[existing.status]?.includes(body.status)) {

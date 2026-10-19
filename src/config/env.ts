@@ -79,6 +79,18 @@ const schema = z.object({
     ),
     CLAMAV_HOST: z.string().default("127.0.0.1"),
     CLAMAV_PORT: z.coerce.number().int().positive().default(3310),
+
+    AI_ENABLED: z.preprocess(
+        (value) => value === undefined ? false : value === true || value === "true" || value === "1",
+        z.boolean(),
+    ),
+    AI_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
+    AI_API_KEY: z.string().optional(),
+    AI_MODEL: z.string().default("gemini-2.5-flash"),
+    AI_BASE_URL: z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.url().optional()),
+    AI_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
+    AI_MAX_INPUT_CHARS: z.coerce.number().int().positive().default(120_000),
+    AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8_000),
 });
 
 const parsed = schema.safeParse(process.env);
@@ -116,6 +128,9 @@ if (env.NODE_ENV === "production") {
         throw new Error(
             "DOCUMENT_MALWARE_SCAN_ENABLED must be enabled in production.",
         );
+    }
+    if (env.AI_ENABLED && !env.AI_API_KEY) {
+        throw new Error("AI_API_KEY is required when AI_ENABLED is true.");
     }
 }
 

@@ -13,6 +13,7 @@ import { disputeRoutes } from "./modules/disputes/dispute.routes.js";
 import { authRoutes } from "./modules/auth/auth.routes.js";
 import { clientRoutes } from "./modules/clients/client.routes.js";
 import { contractRoutes } from "./modules/contracts/contract.routes.js";
+import { deliveryRoutes } from "./modules/contracts/delivery.routes.js";
 import { invoiceRoutes } from "./modules/invoices/invoice.routes.js";
 import { workspaceRoutes } from "./modules/workspaces/workspace.routes.js";
 import { documentRoutes } from "./modules/documents/document.routes.js";
@@ -20,6 +21,7 @@ import { dashboardRoutes } from "./modules/dashboard/dashboard.routes.js";
 import { evidenceRoutes } from "./modules/evidence/evidence.routes.js";
 import { metaRoutes } from "./modules/meta/meta.routes.js";
 import { paymentRoutes } from "./modules/payments/payment.routes.js";
+import { aiRoutes } from "./modules/ai/ai.routes.js";
 
 const app = Fastify({
   loggerInstance: logger,
@@ -84,8 +86,10 @@ await app.register(authRoutes);
 await app.register(workspaceRoutes);
 await app.register(clientRoutes);
 await app.register(contractRoutes);
+await app.register(deliveryRoutes);
 await app.register(invoiceRoutes);
 await app.register(paymentRoutes);
+await app.register(aiRoutes);
 await app.register(documentRoutes);
 await app.register(dashboardRoutes);
 await app.register(evidenceRoutes);
