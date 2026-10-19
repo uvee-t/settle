@@ -3,9 +3,13 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../../db/client.js";
 import { clients, contracts, contractVersions, milestones, documents } from "../../db/schema/core.js";
+import { milestoneInvoices } from "../../db/schema/billing.js";
+import { invoices } from "../../db/schema/invoices.js";
 import { requireWorkspace, requireRole } from "../auth/auth.plugin.js";
 import { writeAudit } from "../../lib/audit.js";
 import { NotFoundError } from "../../lib/errors.js";
+import { billMilestone } from "./milestone-billing.service.js";
+import { beginIdempotency, completeIdempotency, getIdempotentResponse, releaseIdempotency } from "../../lib/idempotency.js";
 
 const contractSchema = z.object({
   client_id: z.uuid(),
@@ -118,20 +122,85 @@ export async function contractRoutes(app: FastifyInstance) {
     });
     if (!contract) throw new NotFoundError("Milestone not found.");
 
-    const [updated] = await db.update(milestones).set({
-      name: body.name,
-      description: body.description,
-      status: body.status,
-      amount: body.amount,
-      dueAt: body.due_at,
-      metadata: body.metadata,
-      completedAt: body.status === "completed" ? new Date() : existing.completedAt,
-      updatedAt: new Date(),
-    }).where(eq(milestones.id, id)).returning();
+    const result = await db.transaction(async (tx) => {
+      const [updated] = await tx.update(milestones).set({
+        name: body.name,
+        description: body.description,
+        status: body.status,
+        amount: body.amount,
+        dueAt: body.due_at,
+        metadata: body.metadata,
+        completedAt: body.status === "completed" ? (existing.completedAt ?? new Date()) : existing.completedAt,
+        updatedAt: new Date(),
+      }).where(eq(milestones.id, id)).returning();
 
-    await writeAudit({ workspaceId: request.auth!.workspaceId, actorType: "user", actorId: request.auth!.userId, action: body.status === "completed" ? "milestone.completed" : "milestone.updated", resourceType: "milestone", resourceId: id, requestId: request.id, before: existing, after: updated });
-    return updated;
+      let billing = null;
+      if (body.status === "completed") {
+        billing = await billMilestone(tx, {
+          workspaceId: request.auth!.workspaceId!,
+          milestoneId: id,
+          actorType: "user",
+          actorId: request.auth!.userId,
+          requestId: request.id,
+        });
+      }
+
+      await writeAudit({ workspaceId: request.auth!.workspaceId, actorType: "user", actorId: request.auth!.userId, action: body.status === "completed" ? "milestone.completed" : "milestone.updated", resourceType: "milestone", resourceId: id, requestId: request.id, before: existing, after: updated, metadata: billing ? { invoiceId: billing.invoice.id, invoiceCreated: billing.created } : undefined }, tx);
+      return { updated, billing };
+    });
+
+    return result.updated;
   });
+  app.post("/v1/milestones/:id/bill", { preHandler: requireRole("owner", "admin", "member") }, async (request, reply) => {
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = z.object({ due_at: z.coerce.date().optional() }).parse(request.body ?? {});
+    const operation = "milestone.bill";
+
+    const cached = await getIdempotentResponse(request, operation);
+    if (cached) return reply.code(200).send(cached);
+
+    const idempotency = await beginIdempotency(request, operation);
+    const idempotencyId = idempotency && typeof idempotency === "object" && "id" in idempotency && typeof idempotency.id === "string" ? idempotency.id : null;
+
+    try {
+      const result = await db.transaction(async (tx) => billMilestone(tx, {
+        workspaceId: request.auth!.workspaceId!,
+        milestoneId: id,
+        actorType: "user",
+        actorId: request.auth!.userId,
+        requestId: request.id,
+        dueAt: body.due_at,
+      }));
+
+      const response = { milestone: result.milestone, invoice: result.invoice, created: result.created };
+      if (idempotencyId) await completeIdempotency(idempotencyId, response);
+      return reply.code(result.created ? 201 : 200).send(response);
+    } catch (error) {
+      if (idempotencyId) {
+        try { await releaseIdempotency(idempotencyId); } catch (releaseError) {
+          request.log.error({ err: releaseError, idempotencyId }, "Failed to release milestone billing idempotency claim");
+        }
+      }
+      throw error;
+    }
+  });
+
+  app.get("/v1/milestones/:id/invoice", { preHandler: requireWorkspace }, async (request) => {
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const binding = await db.query.milestoneInvoices.findFirst({
+      where: eq(milestoneInvoices.milestoneId, id),
+    });
+
+    if (!binding) throw new NotFoundError("Milestone invoice not found.");
+
+    const invoice = await db.query.invoices.findFirst({
+      where: and(eq(invoices.id, binding.invoiceId), eq(invoices.workspaceId, request.auth!.workspaceId!)),
+    });
+
+    if (!invoice) throw new NotFoundError("Milestone invoice not found.");
+    return invoice;
+  });
+
   app.post("/v1/contracts/:id/versions", { preHandler: requireRole("owner", "admin", "member") }, async (request, reply) => {
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const body = z.object({

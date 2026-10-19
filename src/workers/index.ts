@@ -1,4 +1,5 @@
 import { Worker } from "bullmq";
+
 import { and, eq, lte, inArray } from "drizzle-orm";
 
 import { redis } from "../lib/redis.js";
@@ -9,15 +10,28 @@ import { webhookEvents } from "../db/schema/webhook-events.js";
 import { invoices } from "../db/schema/invoices.js";
 import { payments, documents } from "../db/schema/core.js";
 import { outboxEvents } from "../db/schema/outbox.js";
+import { deadLetterJobs } from "../db/schema/dead-letter.js";
 
 import { syncDispute } from "../modules/disputes/dispute.service.js";
 import { extractContractFacts } from "../modules/ai/ai.service.js";
-import { analyzeEvidencePack, generateEvidencePack } from "../modules/evidence/evidence-intelligence.service.js";
+import { documentExtractionJobId, successfulExtractionDocumentIds } from "../modules/ai/ai-jobs.js";
+import {
+    analyzeEvidencePack,
+    generateEvidencePack,
+} from "../modules/evidence/evidence-intelligence.service.js";
+
 import { evidencePacks, aiRuns } from "../db/schema/ai.js";
 import { paypalInvoices } from "../modules/paypal/paypal.invoices.js";
 import { verifyStoredDocument } from "../modules/documents/document.service.js";
 
-import { webhookQueue, outboxQueue, reminderQueue, documentQueue, aiQueue } from "../lib/queue.js";
+import {
+    webhookQueue,
+    outboxQueue,
+    reminderQueue,
+    documentQueue,
+    aiQueue,
+} from "../lib/queue.js";
+
 import { env } from "../config/env.js";
 import { writeAudit } from "../lib/audit.js";
 import { AppError } from "../lib/errors.js";
@@ -36,6 +50,31 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function asString(value: unknown): string | undefined {
     return typeof value === "string" ? value : undefined;
+}
+
+async function recordDeadLetter(input: {
+    queue: string;
+    jobId: string;
+    sourceType: string;
+    sourceId: string;
+    payload: unknown;
+    error: unknown;
+    attempts: number;
+}) {
+    await db
+        .insert(deadLetterJobs)
+        .values({
+            queue: input.queue,
+            jobId: input.jobId,
+            sourceType: input.sourceType,
+            sourceId: input.sourceId,
+            payload: input.payload,
+            error: input.error instanceof Error
+                ? input.error.message.slice(0, 2000)
+                : String(input.error).slice(0, 2000),
+            attempts: String(input.attempts),
+        })
+        .onConflictDoNothing();
 }
 
 /* -------------------------------------------------------------------------- */
@@ -65,7 +104,7 @@ const webhookWorker = new Worker(
             "Processing webhook job",
         );
 
-        /*
+        /**
          * The webhook payload should normally be present in BullMQ.
          *
          * However, the database is our durable source of truth.
@@ -138,18 +177,33 @@ const webhookWorker = new Worker(
                         /* ------------------------------------------------------ */
 
                         if (existing) {
+                            /*
+                             * Capture the state before applying the provider
+                             * update. This is required for a correct financial
+                             * audit trail.
+                             */
+                            const previousStatus = existing.status;
+                            const previousPaidAt = existing.paidAt;
+
+                            /*
+                             * Reuse the same paidAt timestamp for both the
+                             * database state transition and the audit record.
+                             */
+                            const paidAt =
+                                status === "paid"
+                                    ? (existing.paidAt ?? new Date())
+                                    : existing.paidAt;
+
+                            /* -------------------------------------------------- */
+                            /* Update invoice state                               */
+                            /* -------------------------------------------------- */
+
                             await tx
                                 .update(invoices)
                                 .set({
                                     status,
-
                                     rawPayload: invoice,
-
-                                    paidAt:
-                                        status === "paid"
-                                            ? (existing.paidAt ?? new Date())
-                                            : existing.paidAt,
-
+                                    paidAt,
                                     updatedAt: new Date(),
                                 })
                                 .where(eq(invoices.id, existing.id));
@@ -158,13 +212,12 @@ const webhookWorker = new Worker(
                             /* Payment creation/update                            */
                             /* -------------------------------------------------- */
 
-                            /*
+                            /**
                              * PayPal's INVOICING.INVOICE.PAID payload stores
                              * payment information under:
                              *
                              * resource.invoice.payments.transactions[]
                              */
-
                             if (status === "paid") {
                                 const invoicePayments = asRecord(
                                     invoice.payments,
@@ -256,17 +309,88 @@ const webhookWorker = new Worker(
                                         "PayPal payment persisted",
                                     );
                                 }
+
+                                /* -------------------------------------------------- */
+                                /* Financial audit                                    */
+                                /* -------------------------------------------------- */
+
+                                /**
+                                 * Only create invoice.paid when the invoice
+                                 * actually transitions into paid.
+                                 *
+                                 * This is important because PayPal webhooks
+                                 * can be delivered more than once.
+                                 *
+                                 * Example:
+                                 *
+                                 * sent -> paid
+                                 *       ^ audit created
+                                 *
+                                 * paid -> paid
+                                 *       ^ no duplicate audit
+                                 */
+                                if (previousStatus !== "paid") {
+                                    await writeAudit(
+                                        {
+                                            workspaceId:
+                                                existing.workspaceId ??
+                                                undefined,
+
+                                            actorType: "system",
+
+                                            action: "invoice.paid",
+
+                                            resourceType: "invoice",
+
+                                            resourceId: existing.id,
+
+                                            /*
+                                             * Provider event ID is useful for
+                                             * tracing the exact PayPal event
+                                             * which caused the financial
+                                             * transition.
+                                             */
+                                            requestId: eventId,
+
+                                            before: {
+                                                status: previousStatus,
+                                                paidAt: previousPaidAt,
+                                            },
+
+                                            after: {
+                                                status: "paid",
+                                                paidAt,
+                                            },
+
+                                            metadata: {
+                                                provider: "paypal",
+                                                providerInvoiceId,
+                                                eventId,
+                                            },
+                                        },
+                                        tx,
+                                    );
+
+                                    logger.info(
+                                        {
+                                            jobId: job.id,
+                                            eventId,
+                                            providerInvoiceId,
+                                            invoiceId: existing.id,
+                                        },
+                                        "PayPal invoice paid audit recorded",
+                                    );
+                                }
                             }
                         } else {
                             /* -------------------------------------------------- */
                             /* Invoice does not exist locally                    */
                             /* -------------------------------------------------- */
 
-                            /*
+                            /**
                              * Keep webhook processing resilient if PayPal
                              * sends an event before local reconciliation.
                              */
-
                             await tx.insert(invoices).values({
                                 provider: "paypal",
 
@@ -354,15 +478,37 @@ const webhookWorker = new Worker(
             /* Mark webhook event as processed                                    */
             /* ------------------------------------------------------------------ */
 
-            await db
-                .update(webhookEvents)
-                .set({
-                    status: "PROCESSED",
-                    processedAt: new Date(),
-                    attempts: String(job.attemptsMade + 1),
-                    lastError: null,
-                })
-                .where(eq(webhookEvents.providerEventId, eventId));
+            await db.transaction(async (tx) => {
+                await tx
+                    .update(webhookEvents)
+                    .set({
+                        status: "PROCESSED",
+                        processedAt: new Date(),
+                        attempts: String(job.attemptsMade + 1),
+                        lastError: null,
+                    })
+                    .where(eq(webhookEvents.providerEventId, eventId));
+
+                await tx
+                    .update(outboxEvents)
+                    .set({
+                        status: "PROCESSED",
+                        processedAt: new Date(),
+                        lastError: null,
+                    })
+                    .where(
+                        and(
+                            eq(outboxEvents.topic, "paypal.webhook"),
+                            eq(outboxEvents.aggregateType, "webhook_event"),
+                            eq(outboxEvents.aggregateId, (await tx.query.webhookEvents.findFirst({
+                                where: and(
+                                    eq(webhookEvents.provider, "paypal"),
+                                    eq(webhookEvents.providerEventId, eventId),
+                                ),
+                            }))!.id),
+                        ),
+                    );
+            });
 
             logger.info(
                 {
@@ -373,16 +519,63 @@ const webhookWorker = new Worker(
                 "Webhook job completed successfully",
             );
         } catch (error) {
-            const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
-            await db
-                .update(webhookEvents)
-                .set({
-                    status: finalAttempt ? "FAILED" : "RECEIVED",
-                    attempts: String(job.attemptsMade + 1),
-                    lastError:
-                        error instanceof Error ? error.message : String(error),
-                })
-                .where(eq(webhookEvents.providerEventId, eventId));
+            const attempt = job.attemptsMade + 1;
+            const finalAttempt = attempt >= (job.opts.attempts ?? 1);
+            const message = error instanceof Error ? error.message : String(error);
+
+            await db.transaction(async (tx) => {
+                const stored = await tx.query.webhookEvents.findFirst({
+                    where: and(
+                        eq(webhookEvents.provider, "paypal"),
+                        eq(webhookEvents.providerEventId, eventId),
+                    ),
+                });
+
+                if (!stored) return;
+
+                await tx
+                    .update(webhookEvents)
+                    .set({
+                        status: finalAttempt ? "FAILED" : "RECEIVED",
+                        attempts: String(attempt),
+                        lastError: message.slice(0, 2000),
+                    })
+                    .where(eq(webhookEvents.id, stored.id));
+
+                if (finalAttempt) {
+                    await tx
+                        .update(outboxEvents)
+                        .set({
+                            status: "DEAD_LETTERED",
+                            lastError: message.slice(0, 2000),
+                            availableAt: new Date(),
+                        })
+                        .where(
+                            and(
+                                eq(outboxEvents.topic, "paypal.webhook"),
+                                eq(outboxEvents.aggregateType, "webhook_event"),
+                                eq(outboxEvents.aggregateId, stored.id),
+                            ),
+                        );
+                }
+            });
+
+            if (finalAttempt) {
+                await recordDeadLetter({
+                    queue: "settle-webhooks",
+                    jobId: String(job.id),
+                    sourceType: "webhook_event",
+                    sourceId: (await db.query.webhookEvents.findFirst({
+                        where: and(
+                            eq(webhookEvents.provider, "paypal"),
+                            eq(webhookEvents.providerEventId, eventId),
+                        ),
+                    }))!.id,
+                    payload,
+                    error,
+                    attempts: attempt,
+                });
+            }
 
             logger.error(
                 {
@@ -517,25 +710,45 @@ const outboxWorker = new Worker(
                 }
             }
 
+            const attempt = Number(event.attempts) + 1;
+
             await db
                 .update(outboxEvents)
                 .set({
                     status: "PROCESSED",
                     processedAt: new Date(),
-                    attempts: String(job.attemptsMade + 1),
+                    attempts: String(attempt),
                     lastError: null,
                 })
                 .where(eq(outboxEvents.id, outboxId));
         } catch (error) {
+            const attempt = Number(event.attempts) + 1;
+            const finalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+            const message = error instanceof Error ? error.message : String(error);
+
             await db
                 .update(outboxEvents)
                 .set({
-                    status: "FAILED",
-                    attempts: String(job.attemptsMade + 1),
-                    lastError:
-                        error instanceof Error ? error.message : String(error),
+                    status: finalAttempt ? "DEAD_LETTERED" : "QUEUED",
+                    attempts: String(attempt),
+                    lastError: message.slice(0, 2000),
+                    availableAt: finalAttempt
+                        ? new Date(Date.now() + 5 * 60_000)
+                        : new Date(),
                 })
                 .where(eq(outboxEvents.id, outboxId));
+
+            if (finalAttempt) {
+                await recordDeadLetter({
+                    queue: "settle-outbox",
+                    jobId: String(job.id),
+                    sourceType: "outbox_event",
+                    sourceId: outboxId,
+                    payload: event.payload,
+                    error,
+                    attempts: attempt,
+                });
+            }
 
             throw error;
         }
@@ -598,7 +811,7 @@ outboxWorker.on("error", (error) => {
 /* Outbox Dispatcher                                                          */
 /* -------------------------------------------------------------------------- */
 
-/*
+/**
  * Moves pending DB outbox events into BullMQ.
  *
  * BullMQ custom job IDs cannot contain ":".
@@ -606,6 +819,7 @@ outboxWorker.on("error", (error) => {
 
 const recoverWebhookOutbox = async () => {
     const cutoff = new Date(Date.now() - 2 * 60_000);
+
     const events = await db.query.webhookEvents.findMany({
         where: eq(webhookEvents.status, "RECEIVED"),
         limit: 100,
@@ -614,7 +828,7 @@ const recoverWebhookOutbox = async () => {
     for (const event of events) {
         if (event.receivedAt > cutoff) continue;
 
-        const existingOutbox = await db.query.outboxEvents.findFirst({
+        let existingOutbox = await db.query.outboxEvents.findFirst({
             where: and(
                 eq(outboxEvents.topic, "paypal.webhook"),
                 eq(outboxEvents.aggregateType, "webhook_event"),
@@ -622,57 +836,113 @@ const recoverWebhookOutbox = async () => {
             ),
         });
 
-        if (existingOutbox && existingOutbox.status !== "PENDING") {
-            await db.update(outboxEvents).set({
+        if (!existingOutbox) {
+            const [created] = await db
+                .insert(outboxEvents)
+                .values({
+                    topic: "paypal.webhook",
+                    aggregateType: "webhook_event",
+                    aggregateId: event.id,
+                    payload: {
+                        webhookEventId: event.id,
+                        eventId: event.providerEventId,
+                        eventType: event.eventType,
+                    },
+                })
+                .onConflictDoNothing()
+                .returning();
+            existingOutbox = created;
+        }
+
+        if (!existingOutbox || existingOutbox.status === "DEAD_LETTERED") {
+            continue;
+        }
+
+        if (existingOutbox.status === "QUEUED") {
+            const job = await webhookQueue.getJob(`webhook-${event.id}`);
+            if (job) {
+                const state = await job.getState();
+                if (["waiting", "delayed", "active"].includes(state)) {
+                    continue;
+                }
+            }
+        }
+
+        await db
+            .update(outboxEvents)
+            .set({
                 status: "PENDING",
                 processedAt: null,
-                lastError: "Webhook recovery requeued stale event",
-            }).where(eq(outboxEvents.id, existingOutbox.id));
-        } else if (!existingOutbox) {
-            await db.insert(outboxEvents).values({
-                topic: "paypal.webhook",
-                aggregateType: "webhook_event",
-                aggregateId: event.id,
-                payload: {
-                    webhookEventId: event.id,
-                    eventId: event.providerEventId,
-                    eventType: event.eventType,
-                },
-            }).onConflictDoNothing();
-        }
+                availableAt: new Date(),
+                lastError: "Webhook recovery requeued stale delivery",
+            })
+            .where(eq(outboxEvents.id, existingOutbox.id));
     }
 };
 
-void recoverWebhookOutbox();
-const webhookRecoveryInterval = setInterval(() => void recoverWebhookOutbox(), 60 * 1000);
+void recoverWebhookOutbox().catch((error) =>
+    logger.error({ err: error }, "Webhook recovery failed"),
+);
+
+const webhookRecoveryInterval = setInterval(
+    () =>
+        void recoverWebhookOutbox().catch((error) =>
+            logger.error({ err: error }, "Webhook recovery failed"),
+        ),
+    60 * 1000,
+);
 
 const dispatcher = setInterval(async () => {
     try {
         const pending = await db.query.outboxEvents.findMany({
-            where: eq(outboxEvents.status, "PENDING"),
+            where: and(
+                inArray(outboxEvents.status, ["PENDING", "FAILED"]),
+                lte(outboxEvents.availableAt, new Date()),
+            ),
             limit: 100,
         });
 
         for (const event of pending) {
+            const queue =
+                event.topic === "paypal.webhook" ? webhookQueue : outboxQueue;
+            const jobId =
+                event.topic === "paypal.webhook"
+                    ? `webhook-${event.aggregateId}`
+                    : `outbox-${event.id}`;
+
+            const existingJob = await queue.getJob(jobId);
+            if (existingJob) {
+                const state = await existingJob.getState();
+
+                if (["waiting", "delayed", "active", "paused"].includes(state)) {
+                    await db
+                        .update(outboxEvents)
+                        .set({ status: "QUEUED" })
+                        .where(eq(outboxEvents.id, event.id));
+                    continue;
+                }
+
+                await existingJob.remove().catch(() => undefined);
+            }
+
             if (event.topic === "paypal.webhook") {
-                await webhookQueue.add(
-                    "paypal.webhook",
-                    event.payload,
-                    { jobId: `webhook-${event.aggregateId}` },
-                );
+                await webhookQueue.add("paypal.webhook", event.payload, {
+                    jobId,
+                });
             } else {
                 await outboxQueue.add(
                     event.topic,
                     { outboxId: event.id },
-                    { jobId: `outbox-${event.id}` },
+                    { jobId },
                 );
             }
 
             await db
                 .update(outboxEvents)
                 .set({
-                    status: event.topic === "paypal.webhook" ? "PROCESSED" : "QUEUED",
-                    processedAt: event.topic === "paypal.webhook" ? new Date() : undefined,
+                    status: "QUEUED",
+                    processedAt: null,
+                    availableAt: new Date(),
                 })
                 .where(eq(outboxEvents.id, event.id));
         }
@@ -688,35 +958,70 @@ const dispatcher = setInterval(async () => {
 const reminderWorker = new Worker(
     "settle-reminders",
     async (job) => {
-        const { invoiceId } = job.data as { invoiceId: string };
-        const invoice = await db.query.invoices.findFirst({ where: eq(invoices.id, invoiceId) });
+        const { invoiceId } = job.data as {
+            invoiceId: string;
+        };
 
-        if (!invoice || invoice.status !== "sent" || !invoice.providerInvoiceId) return;
+        const invoice = await db.query.invoices.findFirst({
+            where: eq(invoices.id, invoiceId),
+        });
 
-        const lockKey = `settle:reminder:${invoice.id}:${new Date().toISOString().slice(0, 10)}`;
+        if (
+            !invoice ||
+            invoice.status !== "sent" ||
+            !invoice.providerInvoiceId
+        ) {
+            return;
+        }
+
+        const lockKey = `settle:reminder:${
+            invoice.id
+        }:${new Date().toISOString().slice(0, 10)}`;
+
         const locked = await redis.set(lockKey, "1", "EX", 86_400, "NX");
+
         if (locked !== "OK") return;
 
         await paypalInvoices.remind(invoice.providerInvoiceId, {});
+
         try {
             await writeAudit({
                 workspaceId: invoice.workspaceId ?? undefined,
+
                 actorType: "system",
+
                 action: "invoice.reminder_sent",
+
                 resourceType: "invoice",
+
                 resourceId: invoice.id,
-                metadata: { automated: true },
+
+                metadata: {
+                    automated: true,
+                },
             });
         } catch (auditError) {
-            logger.error({ err: auditError, invoiceId: invoice.id }, "Failed to write reminder audit");
+            logger.error(
+                {
+                    err: auditError,
+                    invoiceId: invoice.id,
+                },
+                "Failed to write reminder audit",
+            );
         }
 
         logger.info(
-            { invoiceId: invoice.id, providerInvoiceId: invoice.providerInvoiceId },
+            {
+                invoiceId: invoice.id,
+                providerInvoiceId: invoice.providerInvoiceId,
+            },
             "Automated invoice reminder sent",
         );
     },
-    { connection: redis, concurrency: 5 },
+    {
+        connection: redis,
+        concurrency: 5,
+    },
 );
 
 const dispatchReminders = async () => {
@@ -724,32 +1029,63 @@ const dispatchReminders = async () => {
 
     try {
         const now = new Date();
-        const horizon = new Date(now.getTime() + env.REMINDER_DAYS_BEFORE_DUE * 86_400_000);
+
+        const horizon = new Date(
+            now.getTime() + env.REMINDER_DAYS_BEFORE_DUE * 86_400_000,
+        );
+
         const rows = await db.query.invoices.findMany({
-            where: and(eq(invoices.status, "sent"), lte(invoices.dueAt, horizon)),
+            where: and(
+                eq(invoices.status, "sent"),
+                lte(invoices.dueAt, horizon),
+            ),
             limit: 5000,
         });
 
         const dateKey = now.toISOString().slice(0, 10);
+
         for (const invoice of rows) {
-            if (!invoice.dueAt || !invoice.providerInvoiceId) continue;
+            if (!invoice.dueAt || !invoice.providerInvoiceId) {
+                continue;
+            }
+
             await reminderQueue.add(
                 "invoice.reminder",
-                { invoiceId: invoice.id },
-                { jobId: `invoice-reminder-${invoice.id}-${dateKey}` },
+                {
+                    invoiceId: invoice.id,
+                },
+                {
+                    jobId: `invoice-reminder-${invoice.id}-${dateKey}`,
+                },
             );
         }
     } catch (error) {
-        logger.error({ err: error }, "Reminder dispatcher failed");
+        logger.error(
+            {
+                err: error,
+            },
+            "Reminder dispatcher failed",
+        );
     }
 };
 
 void dispatchReminders();
-const reminderDispatcher = setInterval(() => void dispatchReminders(), 60 * 60 * 1000);
+
+const reminderDispatcher = setInterval(
+    () => void dispatchReminders(),
+    60 * 60 * 1000,
+);
 
 reminderWorker.on("ready", () => logger.info("Reminder worker ready"));
+
 reminderWorker.on("failed", (job, error) =>
-    logger.error({ jobId: job?.id, err: error }, "Reminder job failed"),
+    logger.error(
+        {
+            jobId: job?.id,
+            err: error,
+        },
+        "Reminder job failed",
+    ),
 );
 
 /* -------------------------------------------------------------------------- */
@@ -759,84 +1095,185 @@ reminderWorker.on("failed", (job, error) =>
 const documentWorker = new Worker(
     "settle-documents",
     async (job) => {
-        const { documentId } = job.data as { documentId: string };
-        const document = await db.query.documents.findFirst({ where: eq(documents.id, documentId) });
-        if (!document) return;
-        if (document.verificationStatus === "verified") return;
+        const { documentId } = job.data as {
+            documentId: string;
+        };
 
-        await db.update(documents).set({ verificationStatus: "verifying", verificationError: null }).where(eq(documents.id, document.id));
+        const document = await db.query.documents.findFirst({
+            where: eq(documents.id, documentId),
+        });
+
+        if (!document) return;
+
+        if (document.verificationStatus === "verified") {
+            return;
+        }
+
+        await db
+            .update(documents)
+            .set({
+                verificationStatus: "verifying",
+                verificationError: null,
+            })
+            .where(eq(documents.id, document.id));
 
         try {
             const result = await verifyStoredDocument({
                 workspaceId: document.workspaceId,
+
                 objectKey: document.objectKey,
+
                 filename: document.filename,
+
                 contentType: document.contentType,
+
                 expectedSizeBytes: Number(document.sizeBytes),
+
                 expectedSha256: document.sha256,
             });
 
-            const [verified] = await db.update(documents).set({
-                status: "verified",
-                verificationStatus: "verified",
-                verificationError: null,
-                detectedContentType: result.detectedContentType,
-                verifiedAt: new Date(),
-            }).where(eq(documents.id, document.id)).returning();
+            const [verified] = await db
+                .update(documents)
+                .set({
+                    status: "verified",
+
+                    verificationStatus: "verified",
+
+                    verificationError: null,
+
+                    detectedContentType: result.detectedContentType,
+
+                    verifiedAt: new Date(),
+                })
+                .where(eq(documents.id, document.id))
+                .returning();
 
             await writeAudit({
                 workspaceId: document.workspaceId,
+
                 actorType: "system",
+
                 action: "document.verified",
+
                 resourceType: "document",
+
                 resourceId: document.id,
+
                 after: verified,
             });
+
             if (env.AI_ENABLED) {
                 try {
                     await aiQueue.add(
                         "document.extract",
-                        { documentId: document.id },
-                        { jobId: `document-ai-${document.id}-${document.sha256}` },
+                        {
+                            documentId: document.id,
+                        },
+                        {
+                            jobId: documentExtractionJobId(document.id, document.sha256),
+                        },
                     );
                 } catch (error) {
-                    logger.error({ documentId: document.id, err: error }, "Failed to enqueue document AI extraction; recovery will retry");
+                    logger.error(
+                        {
+                            documentId: document.id,
+                            err: error,
+                        },
+                        "Failed to enqueue document AI extraction; recovery will retry",
+                    );
                 }
             }
         } catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            await db.update(documents).set({
-                status: "rejected",
-                verificationStatus: "rejected",
-                verificationError: message.slice(0, 1000),
-            }).where(eq(documents.id, document.id));
+            const message =
+                error instanceof Error ? error.message : String(error);
+
+            await db
+                .update(documents)
+                .set({
+                    status: "rejected",
+
+                    verificationStatus: "rejected",
+
+                    verificationError: message.slice(0, 1000),
+                })
+                .where(eq(documents.id, document.id));
+
             await writeAudit({
                 workspaceId: document.workspaceId,
+
                 actorType: "system",
+
                 action: "document.verification_failed",
+
                 resourceType: "document",
+
                 resourceId: document.id,
-                metadata: { error: message.slice(0, 1000) },
+
+                metadata: {
+                    error: message.slice(0, 1000),
+                },
             });
-            if (error instanceof AppError && error.statusCode < 500) return;
+
+            if (error instanceof AppError && error.statusCode < 500) {
+                return;
+            }
+
             throw error;
         }
     },
-    { connection: redis, concurrency: 3 },
+    {
+        connection: redis,
+        concurrency: 3,
+    },
 );
 
-documentWorker.on("ready", () => logger.info("Document verification worker ready"));
-documentWorker.on("failed", (job, error) => logger.error({ jobId: job?.id, err: error }, "Document verification job failed"));
+documentWorker.on("ready", () =>
+    logger.info("Document verification worker ready"),
+);
+
+documentWorker.on("failed", (job, error) =>
+    logger.error(
+        {
+            jobId: job?.id,
+            err: error,
+        },
+        "Document verification job failed",
+    ),
+);
 
 const recoverDocuments = async () => {
-    const rows = await db.query.documents.findMany({ where: inArray(documents.verificationStatus, ["pending", "verifying"]), limit: 100 });
+    const rows = await db.query.documents.findMany({
+        where: inArray(documents.verificationStatus, ["pending", "verifying"]),
+        limit: 100,
+    });
+
     for (const document of rows) {
-        await documentQueue.add("document.verify", { documentId: document.id }, { jobId: `document-verify-${document.id}` });
+        await documentQueue.add(
+            "document.verify",
+            {
+                documentId: document.id,
+            },
+            {
+                jobId: `document-verify-${document.id}`,
+            },
+        );
     }
 };
 
 void recoverDocuments();
-const documentRecoveryInterval = setInterval(() => void recoverDocuments().catch((error) => logger.error({ err: error }, "Document recovery failed")), 60 * 1000);
+
+const documentRecoveryInterval = setInterval(
+    () =>
+        void recoverDocuments().catch((error) =>
+            logger.error(
+                {
+                    err: error,
+                },
+                "Document recovery failed",
+            ),
+        ),
+    60 * 1000,
+);
 
 /* -------------------------------------------------------------------------- */
 /* AI + evidence intelligence worker                                         */
@@ -846,50 +1283,167 @@ const aiWorker = new Worker(
     "settle-ai",
     async (job) => {
         if (job.name === "document.extract") {
-            const { documentId } = job.data as { documentId: string };
+            const { documentId } = job.data as {
+                documentId: string;
+            };
+
             if (!env.AI_ENABLED) {
-                logger.info({ documentId }, "AI disabled; document extraction skipped");
+                logger.info(
+                    {
+                        documentId,
+                    },
+                    "AI disabled; document extraction skipped",
+                );
+
                 return;
             }
+
             await extractContractFacts(documentId);
-            logger.info({ documentId }, "Document AI extraction completed");
+
+            logger.info(
+                {
+                    documentId,
+                },
+                "Document AI extraction completed",
+            );
+
             return;
         }
+
         if (job.name === "dispute.analyze") {
-            const { disputeId, workspaceId } = job.data as { disputeId: string; workspaceId: string };
+            const { disputeId, workspaceId } = job.data as {
+                disputeId: string;
+                workspaceId: string;
+            };
+
             if (!env.AI_ENABLED) {
-                logger.info({ disputeId }, "AI disabled; dispute analysis skipped");
+                logger.info(
+                    {
+                        disputeId,
+                    },
+                    "AI disabled; dispute analysis skipped",
+                );
+
                 return;
             }
-            const generated = await generateEvidencePack(disputeId, workspaceId);
+
+            const generated = await generateEvidencePack(
+                disputeId,
+                workspaceId,
+            );
+
             await analyzeEvidencePack(generated.packId, workspaceId);
-            logger.info({ disputeId, packId: generated.packId }, "Dispute evidence pack analyzed");
+
+            logger.info(
+                {
+                    disputeId,
+                    packId: generated.packId,
+                },
+                "Dispute evidence pack analyzed",
+            );
+
             return;
         }
+
         throw new Error(`Unknown AI job ${job.name}`);
     },
-    { connection: redis, concurrency: 2 },
+    {
+        connection: redis,
+        concurrency: 2,
+    },
 );
 
 aiWorker.on("ready", () => logger.info("AI/evidence worker ready"));
-aiWorker.on("failed", (job, error) => logger.error({ jobId: job?.id, jobName: job?.name, err: error }, "AI job failed"));
+
+aiWorker.on("failed", (job, error) =>
+    logger.error(
+        {
+            jobId: job?.id,
+            jobName: job?.name,
+            err: error,
+        },
+        "AI job failed",
+    ),
+);
 
 const recoverAiJobs = async () => {
     if (!env.AI_ENABLED) return;
-    const verified = await db.query.documents.findMany({ where: eq(documents.verificationStatus, "verified"), limit: 100 });
-    const runs = await db.query.aiRuns.findMany({ where: eq(aiRuns.task, "document.contract_extraction"), limit: 5000 });
-    const analyzedIds = new Set(runs.map((run) => {
-        const result = run.result as { document_id?: string } | null;
-        return result?.document_id;
-    }).filter((id): id is string => Boolean(id)));
-    for (const document of verified) {
-        if (analyzedIds.has(document.id)) continue;
-        await aiQueue.add("document.extract", { documentId: document.id }, { jobId: `document-ai-recovery-${document.id}-${Date.now()}` });
+
+    const analyzedIds = new Set<string>();
+    const runPageSize = 1000;
+    let runOffset = 0;
+    while (true) {
+        const runs = await db.query.aiRuns.findMany({
+            where: and(
+                eq(aiRuns.task, "document.contract_extraction"),
+                eq(aiRuns.status, "SUCCEEDED"),
+            ),
+            orderBy: (run, { asc }) => [asc(run.createdAt), asc(run.id)],
+            limit: runPageSize,
+            offset: runOffset,
+        });
+        for (const id of successfulExtractionDocumentIds(runs)) analyzedIds.add(id);
+        if (runs.length < runPageSize) break;
+        runOffset += runs.length;
+    }
+
+    const documentPageSize = 100;
+    let documentOffset = 0;
+    while (true) {
+        const verified = await db.query.documents.findMany({
+            where: eq(documents.verificationStatus, "verified"),
+            orderBy: (document, { asc }) => [asc(document.createdAt), asc(document.id)],
+            limit: documentPageSize,
+            offset: documentOffset,
+        });
+        if (verified.length === 0) break;
+
+        for (const document of verified) {
+            if (analyzedIds.has(document.id)) continue;
+            const jobId = documentExtractionJobId(document.id, document.sha256);
+            const existingJob = await aiQueue.getJob(jobId);
+            if (existingJob) {
+                const state = await existingJob.getState();
+                if (state === "failed") {
+                    await existingJob.retry("failed");
+                } else if (state === "completed") {
+                    // No successful DB run was found, so this completed queue record
+                    // must not permanently block recovery.
+                    await existingJob.remove();
+                    await aiQueue.add("document.extract", { documentId: document.id }, { jobId });
+                }
+                // Waiting, delayed, active and other in-flight states are already queued.
+                continue;
+            }
+            await aiQueue.add("document.extract", { documentId: document.id }, { jobId });
+        }
+
+        if (verified.length < documentPageSize) break;
+        documentOffset += verified.length;
     }
 };
 
-void recoverAiJobs().catch((error) => logger.error({ err: error }, "AI recovery failed"));
-const aiRecoveryInterval = setInterval(() => void recoverAiJobs().catch((error) => logger.error({ err: error }, "AI recovery failed")), 5 * 60 * 1000);
+void recoverAiJobs().catch((error) =>
+    logger.error(
+        {
+            err: error,
+        },
+        "AI recovery failed",
+    ),
+);
+
+const aiRecoveryInterval = setInterval(
+    () =>
+        void recoverAiJobs().catch((error) =>
+            logger.error(
+                {
+                    err: error,
+                },
+                "AI recovery failed",
+            ),
+        ),
+    5 * 60 * 1000,
+);
 
 /* -------------------------------------------------------------------------- */
 /* Graceful shutdown                                                         */
@@ -917,7 +1471,13 @@ async function shutdown(signal: string) {
     clearInterval(documentRecoveryInterval);
     clearInterval(aiRecoveryInterval);
 
-    await Promise.all([webhookWorker.close(), outboxWorker.close(), reminderWorker.close(), documentWorker.close(), aiWorker.close()]);
+    await Promise.all([
+        webhookWorker.close(),
+        outboxWorker.close(),
+        reminderWorker.close(),
+        documentWorker.close(),
+        aiWorker.close(),
+    ]);
 
     await redis.quit();
     await pool.end();
