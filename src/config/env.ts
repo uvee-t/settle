@@ -16,7 +16,7 @@ const schema = z.object({
     PAYPAL_CLIENT_SECRET: z.string().optional(),
     PAYPAL_WEBHOOK_ID: z.string().optional(),
 
-    CORS_ORIGIN: z.string().default("http://localhost:3000"),
+    CORS_ORIGIN: z.string().default("http://localhost:5173"),
 
     AWS_REGION: z.string().default("ap-south-1"),
     AWS_ACCESS_KEY_ID: z.string().optional(),
@@ -68,7 +68,7 @@ const schema = z.object({
     DOCUMENT_ALLOWED_CONTENT_TYPES: z
         .string()
         .default(
-            "application/pdf,image/png,image/jpeg,image/gif,text/plain,text/csv,application/json",
+            "application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/png,image/jpeg,image/gif,text/plain,text/csv,application/json",
         ),
     DOCUMENT_MALWARE_SCAN_ENABLED: z.preprocess(
         (value) =>
@@ -81,13 +81,22 @@ const schema = z.object({
     CLAMAV_PORT: z.coerce.number().int().positive().default(3310),
 
     AI_ENABLED: z.preprocess(
-        (value) => value === undefined ? false : value === true || value === "true" || value === "1",
+        (value) =>
+            value === undefined
+                ? false
+                : value === true || value === "true" || value === "1",
         z.boolean(),
     ),
     AI_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
     AI_API_KEY: z.string().optional(),
     AI_MODEL: z.string().default("gemini-2.5-flash"),
-    AI_BASE_URL: z.preprocess((value) => typeof value === "string" && value.trim() === "" ? undefined : value, z.url().optional()),
+    AI_BASE_URL: z.preprocess(
+        (value) =>
+            typeof value === "string" && value.trim() === ""
+                ? undefined
+                : value,
+        z.url().optional(),
+    ),
     AI_TIMEOUT_MS: z.coerce.number().int().positive().default(45_000),
     AI_MAX_INPUT_CHARS: z.coerce.number().int().positive().default(120_000),
     AI_MAX_OUTPUT_TOKENS: z.coerce.number().int().positive().default(8_000),
@@ -119,7 +128,7 @@ if (env.NODE_ENV === "production") {
     if (env.PAYPAL_BASE_URL.includes("sandbox")) {
         throw new Error("Production cannot use the PayPal Sandbox API.");
     }
-    if (env.CORS_ORIGIN === "http://localhost:3000") {
+    if (env.CORS_ORIGIN === "http://localhost:5173") {
         throw new Error(
             "CORS_ORIGIN must be explicitly configured in production.",
         );

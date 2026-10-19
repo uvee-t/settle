@@ -67,10 +67,12 @@ services:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
+    build:
+      context: ./frontend
+      args:
+        VITE_SETTLE_API_URL: http://localhost:4000
     environment:
-      FRONTEND_PORT: 3000
-      SETTLE_API_URL: http://localhost:4000
+      PORT: 3000
     ports:
       - "3000:3000"
     depends_on:

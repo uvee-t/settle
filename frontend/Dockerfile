@@ -1,21 +1,15 @@
-FROM node:22-alpine AS deps
+FROM node:22-alpine AS build
 WORKDIR /app
-COPY package.json package-lock.json ./
-RUN npm ci
-
-FROM node:22-alpine AS builder
-WORKDIR /app
-COPY --from=deps /app/node_modules ./node_modules
+COPY package*.json ./
+RUN npm install
 COPY . .
+ARG VITE_SETTLE_API_URL=http://localhost:4000
+ENV VITE_SETTLE_API_URL=$VITE_SETTLE_API_URL
 RUN npm run build
-
-FROM node:22-alpine AS runner
+FROM node:22-alpine AS runtime
 WORKDIR /app
-ENV NODE_ENV=production
+RUN npm install --global vite@6.4.1
+COPY --from=build /app/dist ./dist
 ENV PORT=3000
-COPY --from=builder /app/.next/standalone ./
-COPY --from=builder /app/.next/static ./.next/static
-COPY --from=builder /app/public ./public
 EXPOSE 3000
-USER node
-CMD ["node", "server.js"]
+CMD ["vite","preview","--host","0.0.0.0","--port","3000","--strictPort"]

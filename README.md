@@ -1,11 +1,11 @@
-# Settle v0.13.0 — Contract-to-Cash Platform
+# Settle v0.13.3 — Contract-to-Cash Platform
 
 Production-oriented modular monolith for Settle: contracts, milestones, invoices, payments, PayPal synchronization, disputes, evidence, documents, audit logs, idempotency, Redis/BullMQ and transactional outbox processing.
 
 
 ## Frontend
 
-The `frontend/` directory contains a responsive Next.js app for the existing v1 API. It includes a public landing page, workspace sign-in/registration, overview metrics, cash-flow forecast, invoice and contract registers, client management, dispute visibility, private document upload, AI extraction status, and workspace settings. Its presentation uses a light PayPal-blue palette and keeps the existing API routes and data contracts.
+The `frontend/` directory contains the React + Vite application for the existing v1 API. It uses React Router for real URL routes and includes workspace sign-in/registration, overview metrics and charts, cash-flow forecast visualizations, invoice and contract detail workflows, client editing, milestone billing, dispute visibility, document views, and workspace settings.
 
 Start the API and worker in separate terminals, then start the frontend:
 
@@ -20,15 +20,12 @@ npm run worker
 npm run frontend:dev
 ```
 
-For local frontend development, install its dependencies once with `npm install --prefix frontend`.
+Open `http://localhost:5173`. The default API URL is `http://localhost:4000`; set `SETTLE_API_URL` for the frontend server/container or change it in Settings (the browser remembers it locally). In production, set `CORS_ORIGIN` to the deployed frontend origin. Development explicitly allows Vite on `localhost:5173` and `127.0.0.1:5173`; the API allows PATCH during CORS preflight. Browser-based S3 uploads also require a bucket CORS policy that allows the frontend origin and the required PUT headers.
 
-Open `http://localhost:3000`. The default API URL is `http://localhost:4000`; set `SETTLE_API_URL` for the frontend server/container or change it in Settings (the browser remembers it locally). Set `CORS_ORIGIN` to the frontend origin for local development and to the deployed frontend origin in production. Browser-based S3 uploads also require a bucket CORS policy that allows the frontend origin and the required PUT headers.
-
-Frontend syntax and production build checks:
+Frontend syntax and static-server smoke checks:
 
 ```bash
-npm run frontend:check
-npm --prefix frontend run build
+npm run frontend:build
 ```
 
 ## Reliability checks
@@ -159,3 +156,22 @@ GET  /v1/disputes/:disputeId/evidence-pack
 POST /v1/disputes/:disputeId/evidence-pack/review
 POST /v1/disputes/:disputeId/evidence-pack/submit
 ```
+
+## React frontend (v0.13.1 update)
+
+The React + Vite frontend lives in `frontend/` and is the single frontend used by Docker Compose. It adds URL-based React Router routes and frontend workflows for client editing, invoice detail/send/remind/cancel, contract milestones, payments, and workspace settings.
+
+- Local frontend: `npm install --prefix frontend && npm run frontend:dev`
+- Production build: `npm run frontend:build`
+- API URL: set `VITE_SETTLE_API_URL` at frontend build time (defaults to `http://localhost:4000`).
+
+The backend adds `PATCH /v1/clients/:id`, scoped to the authenticated workspace and audited. PayPal seller onboarding is not faked; it remains dependent on PayPal partner/merchant onboarding credentials and configuration.
+
+
+## Document uploads (DOCX and S3)
+
+The Documents page uploads through the workspace-scoped `POST /v1/documents/upload-url` and `POST /v1/documents` flow. DOCX is included in the default allowed MIME types. If your `.env` explicitly defines `DOCUMENT_ALLOWED_CONTENT_TYPES`, append `application/vnd.openxmlformats-officedocument.wordprocessingml.document` to that comma-separated list and restart the API.
+
+Because the browser uploads directly to S3 using a short-lived presigned URL, configure the S3 bucket CORS policy to allow the exact frontend origin (for local development, `http://localhost:5173`), method `PUT`, and headers `content-type` and `x-amz-server-side-encryption`. Do not expose AWS credentials in frontend environment variables. The backend must have valid S3 credentials and the configured bucket/region.
+
+The overview includes real API-backed quick actions and recent invoices/contracts. The workspace search queries the current workspace's clients, invoices and contracts endpoints; it does not use fabricated sample results.

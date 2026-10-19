@@ -1,6 +1,0 @@
-{
-  "version": 3,
-  "sources": [],
-  "sections": [
-    {"offset": {"line": 10, "column": 0}, "map": {"version":3,"sources":["file:///home/uvee/Desktop/settle-redesigned./settle-v0.13.0-test/frontend/app/page.js"],"sourcesContent":["import Script from 'next/script';\n\nexport default function Home() {\n  return <><div id=\"app\"><div className=\"boot-screen\"><div className=\"brand-mark\">s.</div><p>Getting Settle ready…</p></div></div><Script src=\"/app.js\" strategy=\"afterInteractive\" /></>;\n}\n"],"names":["Home","id","className","src","strategy"],"mappings":";;;;;AAAA;;;AAEe,SAASA;IACtB,qBAAO;;0BAAE,8OAAC;gBAAIC,IAAG;0BAAM,cAAA,8OAAC;oBAAIC,WAAU;;sCAAc,8OAAC;4BAAIA,WAAU;sCAAa;;;;;;sCAAQ,8OAAC;sCAAE;;;;;;;;;;;;;;;;;0BAAqC,8OAAC,yIAAM;gBAACC,KAAI;gBAAUC,UAAS;;;;;;;;;;;;AACjK"}}]
-}

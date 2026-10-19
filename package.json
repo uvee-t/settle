@@ -14,9 +14,9 @@
     "db:migrate": "drizzle-kit migrate",
     "db:push": "drizzle-kit push",
     "frontend:dev": "npm --prefix frontend run dev",
-    "frontend:check": "npm --prefix frontend run check",
-    "check": "npm run build && npm test && npm run frontend:check && npm run frontend:test",
-    "frontend:test": "node --test frontend/server.test.mjs"
+    "check": "npm run build && npm test && npm run frontend:build",
+    "frontend:build": "npm --prefix frontend run build",
+    "frontend:preview": "npm --prefix frontend run preview"
   },
   "dependencies": {
     "@fastify/cors": "^11.0.0",

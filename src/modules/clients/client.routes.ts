@@ -57,6 +57,25 @@ export async function clientRoutes(app: FastifyInstance) {
     return row;
   });
 
+  app.patch("/v1/clients/:id", { preHandler: requireRole("owner", "admin", "member") }, async (request) => {
+    const { id } = z.object({ id: z.uuid() }).parse(request.params);
+    const body = createSchema.partial().refine((value) => Object.keys(value).length > 0, { message: "Provide at least one field to update." }).parse(request.body);
+    const existing = await db.query.clients.findFirst({
+      where: and(eq(clients.id, id), eq(clients.workspaceId, request.auth!.workspaceId!), isNull(clients.archivedAt)),
+    });
+    if (!existing) throw new NotFoundError("Client not found.");
+    const [updated] = await db.update(clients).set({
+      ...(body.name !== undefined ? { name: body.name } : {}),
+      ...(body.email !== undefined ? { email: body.email } : {}),
+      ...(body.company_name !== undefined ? { companyName: body.company_name } : {}),
+      ...(body.country_code !== undefined ? { countryCode: body.country_code } : {}),
+      ...(body.metadata !== undefined ? { metadata: body.metadata } : {}),
+      updatedAt: new Date(),
+    }).where(and(eq(clients.id, id), eq(clients.workspaceId, request.auth!.workspaceId!))).returning();
+    await writeAudit({ workspaceId: request.auth!.workspaceId, actorType: "user", actorId: request.auth!.userId, action: "client.updated", resourceType: "client", resourceId: id, requestId: request.id, before: existing, after: updated });
+    return updated;
+  });
+
   app.delete("/v1/clients/:id", { preHandler: requireRole("owner", "admin") }, async (request) => {
     const { id } = z.object({ id: z.uuid() }).parse(request.params);
     const [row] = await db.update(clients)
