@@ -3,6 +3,7 @@ import { and, eq } from "drizzle-orm";
 import { z } from "zod";
 import { db } from "../../db/client.js";
 import { disputes } from "../../db/schema/disputes.js";
+import { documents } from "../../db/schema/core.js";
 import { requireRole, requireWorkspace } from "../auth/auth.plugin.js";
 import { buildEvidencePack } from "./evidence.service.js";
 import { evidencePackItems, evidencePacks } from "../../db/schema/ai.js";
@@ -27,6 +28,46 @@ export async function evidenceRoutes(app: FastifyInstance) {
             });
             if (!local) throw new NotFoundError("Dispute not found.");
             return buildEvidencePack(disputeId, request.auth!.workspaceId!);
+        },
+    );
+
+    app.post(
+        "/v1/disputes/:disputeId/evidence-pack/documents",
+        { preHandler: requireRole("owner", "admin", "member") },
+        async (request, reply) => {
+            const { disputeId } = z.object({ disputeId: z.uuid() }).parse(request.params);
+            const body = z.object({ document_id: z.uuid(), evidence_type: z.string().min(1).max(100).default("PROOF_OF_FULFILLMENT"), claim: z.string().min(5).max(5000).optional() }).parse(request.body);
+            const workspaceId = request.auth!.workspaceId!;
+            const local = await db.query.disputes.findFirst({ where: and(eq(disputes.id, disputeId), eq(disputes.workspaceId, workspaceId)) });
+            if (!local) throw new NotFoundError("Dispute not found.");
+            const document = await db.query.documents.findFirst({ where: and(eq(documents.id, body.document_id), eq(documents.workspaceId, workspaceId)) });
+            if (!document) throw new NotFoundError("Document not found in this workspace.");
+            if (document.verificationStatus !== "verified" || document.status !== "verified") {
+                throw new ValidationError("Only documents that have completed verification can be attached as dispute evidence.");
+            }
+            let pack = await db.query.evidencePacks.findFirst({ where: and(eq(evidencePacks.disputeId, disputeId), eq(evidencePacks.workspaceId, workspaceId)) });
+            if (!pack) {
+                await buildEvidencePack(disputeId, workspaceId);
+                pack = await db.query.evidencePacks.findFirst({ where: and(eq(evidencePacks.disputeId, disputeId), eq(evidencePacks.workspaceId, workspaceId)) });
+            }
+            if (!pack) throw new NotFoundError("Evidence pack could not be prepared.");
+            if (pack.status === "SUBMITTED") throw new ValidationError("Evidence has already been submitted to PayPal; create a follow-up submission if PayPal still permits it.");
+            const existing = await db.query.evidencePackItems.findMany({ where: eq(evidencePackItems.evidencePackId, pack.id) });
+            const duplicate = existing.find((item) => item.sourceType === "document" && item.sourceId === document.id);
+            if (duplicate) return reply.code(200).send({ item: duplicate, duplicate: true });
+            const [item] = await db.insert(evidencePackItems).values({
+                evidencePackId: pack.id,
+                evidenceType: body.evidence_type,
+                sourceType: "document",
+                sourceId: document.id,
+                claim: body.claim || `Supporting document ${document.filename} (${document.contentType}, ${document.sizeBytes} bytes) was uploaded to Settle and verified. Review the document and confirm its contents support this claim before submission.`,
+                confidence: "0.80",
+                selected: "true",
+                metadata: { filename: document.filename, contentType: document.contentType, sizeBytes: document.sizeBytes, sha256: document.sha256, objectKey: document.objectKey },
+            }).returning();
+            await db.update(evidencePacks).set({ status: "READY_FOR_REVIEW", reviewedAt: null, reviewedBy: null, updatedAt: new Date() }).where(eq(evidencePacks.id, pack.id));
+            await writeAudit({ workspaceId, actorType: "user", actorId: request.auth!.userId, action: "dispute.evidence_document_attached", resourceType: "dispute", resourceId: local.id, requestId: request.id, metadata: { document_id: document.id, evidence_item_id: item.id } });
+            return reply.code(201).send({ item, duplicate: false });
         },
     );
 
@@ -148,23 +189,32 @@ export async function evidenceRoutes(app: FastifyInstance) {
             for (const requirement of requirements) {
                 const type = requirement.providerEvidenceType;
 
-                const item = items.find(
-                    (i) =>
-                        i.evidenceType === type ||
-                        (type === "PROOF_OF_DELIVERY" &&
-                            i.evidenceType === "PROOF_OF_FULFILLMENT") ||
-                        (type === "COMMUNICATION" &&
-                            i.evidenceType === "COMMUNICATION"),
+                const matchingItems = items.filter(
+                    (i) => i.evidenceType === type ||
+                        (type === "PROOF_OF_DELIVERY" && i.evidenceType === "PROOF_OF_FULFILLMENT") ||
+                        (type === "COMMUNICATION" && i.evidenceType === "COMMUNICATION") ||
+                        (type === "OTHER" && i.evidenceType === "OTHER"),
                 );
-
-                if (!item) continue;
-
+                if (!matchingItems.length) continue;
+                const attachedDocuments: Array<{ id: string; workspaceId: string }> = [];
+                for (const item of matchingItems) {
+                    if (item.sourceType === "document") {
+                        const doc = await db.query.documents.findFirst({
+                            where: and(eq(documents.id, item.sourceId), eq(documents.workspaceId, request.auth!.workspaceId!)),
+                        });
+                        if (!doc || doc.verificationStatus !== "verified") {
+                            throw new ValidationError(`Evidence document ${item.sourceId} is missing or has not passed verification.`);
+                        }
+                        attachedDocuments.push({ id: doc.id, workspaceId: request.auth!.workspaceId! });
+                    }
+                }
                 const result = await submitEvidence({
                     disputeId: local.id,
                     providerDisputeId: local.providerDisputeId,
                     evidenceType: type,
                     evidenceRequestId: requirement.id,
-                    notes: `${item.claim}\n\nSettle evidence pack: ${pack.id}`,
+                    notes: `${matchingItems.map((item) => item.claim).join("\n\n")}\n\nSettle evidence pack: ${pack.id}`.slice(0, 1900),
+                    documents: attachedDocuments,
                 });
 
                 submissions.push(result);

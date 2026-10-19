@@ -41,6 +41,21 @@ export async function disputeRoutes(app: FastifyInstance) {
         },
     );
 
+    app.post(
+        "/v1/disputes/sync",
+        { preHandler: requireRole("owner", "admin", "member") },
+        async (request) => {
+            const result = await paypalDisputes.listRecent();
+            let synced = 0;
+            for (const item of result.items ?? []) {
+                if (!item.dispute_id) continue;
+                await syncDispute(item.dispute_id, request.auth!.workspaceId!);
+                synced++;
+            }
+            return { synced, imported: synced, items: result.items ?? [] };
+        },
+    );
+
     app.get(
         "/v1/disputes/:disputeId",
         { preHandler: requireWorkspace },

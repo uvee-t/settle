@@ -175,3 +175,22 @@ The Documents page uploads through the workspace-scoped `POST /v1/documents/uplo
 Because the browser uploads directly to S3 using a short-lived presigned URL, configure the S3 bucket CORS policy to allow the exact frontend origin (for local development, `http://localhost:5173`), method `PUT`, and headers `content-type` and `x-amz-server-side-encryption`. Do not expose AWS credentials in frontend environment variables. The backend must have valid S3 credentials and the configured bucket/region.
 
 The overview includes real API-backed quick actions and recent invoices/contracts. The workspace search queries the current workspace's clients, invoices and contracts endpoints; it does not use fabricated sample results.
+
+## v0.14.1 dispute and auth improvements
+
+- `/login` and `/register` are now URL-driven pages. Switching between sign-in and registration navigates to the matching URL. Unauthenticated visits to protected routes redirect to `/login` rather than leaving the browser at `/dashboard` while rendering the auth form.
+- The Disputes page includes **Sync all PayPal disputes**. It queries disputes from the configured PayPal API account for the most recent 180 days (bounded pagination), imports/updates them idempotently, and then refreshes the workspace list. Transaction-ID lookup remains available.
+- Dispute details can upload a supporting document through the existing workspace-scoped S3 document flow. Once the background verification completes, attach the verified file to the evidence pack, select an evidence type, review the generated claim, approve the pack, and submit. PayPal receives the attached binary files in the multipart `provide-evidence` request along with the evidence notes.
+- Adding a document to a reviewed-but-not-submitted pack returns it to `READY_FOR_REVIEW`, so the newly added proof must be reviewed again. Submitted packs cannot be silently modified.
+
+For DOCX uploads, make sure `DOCUMENT_ALLOWED_CONTENT_TYPES` in your local environment includes `application/vnd.openxmlformats-officedocument.wordprocessingml.document`. The backend must have its existing S3 configuration and the bucket CORS policy must allow the frontend origin to PUT files using the signed URL headers.
+
+### Testing the changes
+
+1. Install backend dependencies with `npm ci` in the project root and frontend dependencies with `npm ci` in `frontend/`.
+2. Build the frontend with `npm run build` from `frontend/`.
+3. Build the backend with `npm run build` from the project root.
+4. Start the backend and worker with your normal local environment, sign in, open `/disputes`, and use **Sync all PayPal disputes**.
+5. Open a case, upload a DOCX/PDF, wait for the document to show **Verified**, attach it, approve the evidence pack, and submit. Confirm the returned PayPal response and refresh the case.
+
+The frontend production build was verified during preparation. Full backend type-check/build and end-to-end Sandbox submission could not be verified in this environment because backend dependencies were incomplete and PayPal/S3 credentials are environment-specific; run the steps above locally before relying on this flow.

@@ -25,6 +25,30 @@ export class PayPalDisputeAdapter {
     );
   }
 
+  async listRecent() {
+    const end = new Date();
+    const start = new Date(end.getTime() - 180 * 24 * 60 * 60 * 1000);
+    const all: PayPalDispute[] = [];
+    let token: string | undefined;
+    // PayPal paginates dispute listings. Bound pages to protect request duration.
+    for (let page = 0; page < 10; page++) {
+      const params = new URLSearchParams({
+        start_time: start.toISOString(),
+        end_time: end.toISOString(),
+        page_size: "20",
+      });
+      if (token) params.set("next_page_token", token);
+      const result = await paypalClient.request<{
+        items?: PayPalDispute[];
+        next_page_token?: string;
+      }>(`/v1/customer/disputes?${params.toString()}`);
+      all.push(...(result.items ?? []));
+      token = result.next_page_token;
+      if (!token || !result.items?.length) break;
+    }
+    return { items: all };
+  }
+
   async get(disputeId: string) {
     return paypalClient.request<PayPalDispute>(
       `/v1/customer/disputes/${encodeURIComponent(disputeId)}`,
@@ -33,26 +57,23 @@ export class PayPalDisputeAdapter {
 
   async provideEvidence(
     disputeId: string,
-    evidence: {
-      evidence_type: string;
-      notes?: string;
-    },
+    evidence: { evidence_type: string; notes?: string },
+    files: Array<{ name: string; contentType: string; content: Buffer }> = [],
   ) {
     const boundary = `----settle-${crypto.randomUUID()}`;
-    const body =
-      `--${boundary}\r\n` +
-      `Content-Disposition: form-data; name="input"\r\n` +
-      `Content-Type: application/json\r\n\r\n` +
-      `${JSON.stringify({ evidences: [evidence] })}\r\n` +
-      `--${boundary}--\r\n`;
-
+    const parts: Buffer[] = [];
+    const json = JSON.stringify({ evidences: [{ ...evidence, ...(files.length ? { documents: files.map((file) => ({ name: file.name })) } : {}) }] });
+    parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="input"\r\nContent-Type: application/json\r\n\r\n${json}\r\n`));
+    files.forEach((file, index) => {
+      const safeName = file.name.replace(/[\"\r\n]/g, "_");
+      parts.push(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file${index + 1}"; filename="${safeName}"\r\nContent-Type: ${file.contentType}\r\n\r\n`));
+      parts.push(file.content);
+      parts.push(Buffer.from("\r\n"));
+    });
+    parts.push(Buffer.from(`--${boundary}--\r\n`));
     return paypalClient.request(
       `/v1/customer/disputes/${encodeURIComponent(disputeId)}/provide-evidence`,
-      {
-        method: "POST",
-        headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` },
-        body,
-      },
+      { method: "POST", headers: { "Content-Type": `multipart/form-data; boundary=${boundary}` }, body: Buffer.concat(parts) },
     );
   }
 

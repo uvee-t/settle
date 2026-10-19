@@ -59,3 +59,18 @@
 /* Dispute workspace */
 .dispute-sync-form{grid-template-columns:minmax(0,1fr) auto;align-items:end}.dispute-sync-form .formactions{margin:0}.evidence-summary{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;padding:16px 20px}.evidence-summary>div{border:1px solid var(--line);padding:12px;border-radius:4px}.evidence-summary span{display:block;color:var(--muted);font-size:11px}.evidence-summary b{display:block;font-size:19px;margin-top:6px}.claim-cell{white-space:normal;min-width:250px;max-width:540px;line-height:1.5}.evidence-actions{padding-top:16px;padding-bottom:18px}.evidence-actions .primary:disabled{opacity:.5}.panel .json{max-height:420px;overflow:auto}.dispute-sync-form input{max-width:100%}
 @media(max-width:767px){.dispute-sync-form{grid-template-columns:1fr}.evidence-summary{padding:12px;gap:6px}.evidence-summary>div{padding:9px}.evidence-summary b{font-size:16px}.evidence-actions{padding:12px;flex-wrap:wrap}.claim-cell{min-width:260px}}
+
+/* Dispute evidence attachments */
+.head-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.dispute-document-tools{display:grid;gap:12px;padding:16px;border-bottom:1px solid var(--border,#e4e5df)}
+.dispute-document-tools h3{margin:0 0 4px;font-size:15px}
+.dispute-document-tools p{margin:0;max-width:900px;font-size:13px;line-height:1.5}
+.dispute-upload-form{display:flex;gap:10px;align-items:center;flex-wrap:wrap}
+.dispute-upload-form input[type=file]{min-width:240px;max-width:100%;font:inherit;font-size:13px}
+.document-attach-list{display:grid;gap:8px}
+.document-attach-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 12px;border:1px solid var(--border,#e4e5df);border-radius:8px;background:#fff}
+.document-attach-row span{display:grid;gap:3px;min-width:0}
+.document-attach-row b{font-size:13px;overflow-wrap:anywhere}
+.document-attach-row small{font-size:11px;color:var(--muted,#73766f)}
+@media(max-width:640px){.head-actions{width:100%}.head-actions button{flex:1}.dispute-upload-form{align-items:stretch;flex-direction:column}.dispute-upload-form input[type=file]{width:100%;min-width:0}.document-attach-row{align-items:flex-start}}
+.dispute-upload-form select{min-height:38px;padding:8px 10px;border:1px solid #d8d8d3;border-radius:6px;background:#fff;color:inherit;font:inherit;font-size:13px}

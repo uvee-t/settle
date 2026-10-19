@@ -3,7 +3,8 @@ import { and, eq } from "drizzle-orm";
 import { db } from "../../db/client.js";
 import { disputes } from "../../db/schema/disputes.js";
 import { invoices } from "../../db/schema/invoices.js";
-import { payments } from "../../db/schema/core.js";
+import { payments, documents } from "../../db/schema/core.js";
+import { downloadStoredObject } from "../documents/document.service.js";
 import {
     disputeEvidenceRequests,
     disputeEvidenceSubmissions,
@@ -244,6 +245,7 @@ export async function submitEvidence(input: {
     evidenceType: string;
     evidenceRequestId?: string;
     notes?: string;
+    documents?: Array<{ id: string; workspaceId: string }>;
 }) {
     return withRedisLock(
         `settle:paypal:evidence:${input.disputeId}:${input.evidenceType}`,
@@ -371,12 +373,21 @@ export async function submitEvidence(input: {
                 return updated;
             }
 
+            const files: Array<{ name: string; contentType: string; content: Buffer }> = [];
+            for (const requestedDocument of input.documents ?? []) {
+                const document = await db.query.documents.findFirst({
+                    where: and(eq(documents.id, requestedDocument.id), eq(documents.workspaceId, requestedDocument.workspaceId)),
+                });
+                if (!document || document.verificationStatus !== "verified") {
+                    throw new Error("A selected evidence document is missing or has not passed verification.");
+                }
+                const content = await downloadStoredObject(document.objectKey, requestedDocument.workspaceId);
+                files.push({ name: document.filename, contentType: document.contentType, content });
+            }
             const result = await paypalDisputes.provideEvidence(
                 input.providerDisputeId,
-                {
-                    evidence_type: input.evidenceType,
-                    notes: input.notes,
-                },
+                { evidence_type: input.evidenceType, notes: input.notes },
+                files,
             );
 
             const [updated] = await db
