@@ -191,7 +191,31 @@ export async function evidenceRoutes(app: FastifyInstance) {
                 resourceId: pack.id,
                 requestId: request.id,
                 after: updated,
-                metadata: { submission_count: submissions.length },
+                metadata: {
+                    submission_count: submissions.length,
+                    submission_ids: submissions
+                        .map((submission) =>
+                            typeof submission === "object" &&
+                            submission !== null &&
+                            "id" in submission
+                                ? String((submission as { id: unknown }).id)
+                                : null,
+                        )
+                        .filter((id): id is string => Boolean(id)),
+                    evidence_types: submissions
+                        .map((submission) =>
+                            typeof submission === "object" &&
+                            submission !== null &&
+                            "evidenceType" in submission
+                                ? String(
+                                      (submission as {
+                                          evidenceType: unknown;
+                                      }).evidenceType,
+                                  )
+                                : null,
+                        )
+                        .filter((type): type is string => Boolean(type)),
+                },
             });
             return { pack: updated, submissions };
         },

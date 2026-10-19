@@ -11,6 +11,7 @@ import { aiRuns, evidenceFacts } from "../../db/schema/ai.js";
 import { documents } from "../../db/schema/core.js";
 import { and, eq } from "drizzle-orm";
 import { downloadStoredObject } from "../documents/document.service.js";
+import { withRedisLock } from "../../lib/distributed-lock.js";
 
 async function pdfToText(buffer: Buffer) {
     const dir = await mkdtemp(join(tmpdir(), "settle-pdf-"));
@@ -334,55 +335,62 @@ export async function extractContractFacts(documentId: string) {
 }
 
 export async function generateDisputeDefense(input: {
-    workspaceId: string;
-    dispute: unknown;
-    evidence: unknown;
+  workspaceId: string;
+  dispute: unknown;
+  evidence: unknown;
 }) {
-    const serialized = JSON.stringify(input);
-    const inputHash = createHash("sha256").update(serialized).digest("hex");
+  const serialized = JSON.stringify(input);
+  const inputHash = createHash("sha256").update(serialized).digest("hex");
 
-    const existingRun = await db.query.aiRuns.findFirst({
+  return withRedisLock(
+    `settle:ai:defense:${input.workspaceId}:${inputHash}`,
+    async () => {
+      const existingRun = await db.query.aiRuns.findFirst({
         where: and(
-            eq(aiRuns.workspaceId, input.workspaceId),
-            eq(aiRuns.task, "dispute.defense_draft"),
-            eq(aiRuns.provider, env.AI_PROVIDER),
-            eq(aiRuns.model, env.AI_MODEL),
-            eq(aiRuns.promptVersion, "dispute-defense-v1"),
-            eq(aiRuns.inputHash, inputHash),
-            eq(aiRuns.status, "SUCCEEDED"),
+          eq(aiRuns.workspaceId, input.workspaceId),
+          eq(aiRuns.task, "dispute.defense_draft"),
+          eq(aiRuns.provider, env.AI_PROVIDER),
+          eq(aiRuns.model, env.AI_MODEL),
+          eq(aiRuns.promptVersion, "dispute-defense-v1"),
+          eq(aiRuns.inputHash, inputHash),
+          eq(aiRuns.status, "SUCCEEDED"),
         ),
-    });
+      });
 
-    if (existingRun) {
+      if (existingRun) {
         return {
-            run: existingRun,
-            result: defenseSchema.parse(existingRun.result),
+          run: existingRun,
+          result: defenseSchema.parse(existingRun.result),
         };
-    }
+      }
 
-    const prompt = `You are Settle's dispute defense assistant. Build a factual defense using ONLY the evidence supplied. Never invent delivery, acceptance, dates, amounts, or communications. If evidence is missing, list it. Return JSON: {"strength_score":0,"summary":"","defense_draft":"","claims":[{"claim":"","evidence_type":"","confidence":0}],"missing_evidence":[]}.\n\nDISPUTE AND EVIDENCE:\n${serialized}`;
+      const prompt = `You are Settle's dispute defense assistant. Build a factual defense using ONLY the evidence supplied. Never invent delivery, acceptance, dates, amounts, or communications. If evidence is missing, list it. Return JSON: {"strength_score":0,"summary":"","defense_draft":"","claims":[{"claim":"","evidence_type":"","confidence":0}],"missing_evidence":[]}.\n\nDISPUTE AND EVIDENCE:\n${serialized}`;
 
-    const result = await requestProvider(prompt);
-    const parsed = defenseSchema.parse(result.parsed);
+      const result = await requestProvider(prompt);
+      const parsed = defenseSchema.parse(result.parsed);
 
-    const [run] = await db
+      const [run] = await db
         .insert(aiRuns)
         .values({
-            workspaceId: input.workspaceId,
-            task: "dispute.defense_draft",
-            provider: env.AI_PROVIDER,
-            model: env.AI_MODEL,
-            promptVersion: "dispute-defense-v1",
-            inputHash,
-            status: "SUCCEEDED",
-            result: parsed,
-            tokensIn:
-                result.tokensIn == null ? undefined : String(result.tokensIn),
-            tokensOut:
-                result.tokensOut == null ? undefined : String(result.tokensOut),
-            latencyMs: String(result.latencyMs),
+          workspaceId: input.workspaceId,
+          task: "dispute.defense_draft",
+          provider: env.AI_PROVIDER,
+          model: env.AI_MODEL,
+          promptVersion: "dispute-defense-v1",
+          inputHash,
+          status: "SUCCEEDED",
+          result: parsed,
+          tokensIn:
+            result.tokensIn == null ? undefined : String(result.tokensIn),
+          tokensOut:
+            result.tokensOut == null ? undefined : String(result.tokensOut),
+          latencyMs: String(result.latencyMs),
         })
         .returning();
 
-    return { run, result: parsed };
+      return { run, result: parsed };
+    },
+    { ttlMs: Math.max(env.AI_TIMEOUT_MS + 15_000, 60_000), waitMs: 10_000 },
+  );
 }
+

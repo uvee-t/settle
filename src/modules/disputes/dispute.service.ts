@@ -13,6 +13,7 @@ import {
     type PayPalDispute,
 } from "../paypal/paypal.disputes.js";
 import { aiQueue } from "../../lib/queue.js";
+import { withRedisLock } from "../../lib/distributed-lock.js";
 
 function mapDispute(
     payload: PayPalDispute,
@@ -244,56 +245,163 @@ export async function submitEvidence(input: {
     evidenceRequestId?: string;
     notes?: string;
 }) {
-    const existingSubmission =
-        await db.query.disputeEvidenceSubmissions.findFirst({
-            where: and(
-                eq(disputeEvidenceSubmissions.disputeId, input.disputeId),
-                eq(disputeEvidenceSubmissions.evidenceType, input.evidenceType),
-                eq(disputeEvidenceSubmissions.status, "SUBMITTED"),
-            ),
-        });
+    return withRedisLock(
+        `settle:paypal:evidence:${input.disputeId}:${input.evidenceType}`,
+        async () => {
+            let submission =
+                await db.query.disputeEvidenceSubmissions.findFirst({
+                    where: and(
+                        eq(
+                            disputeEvidenceSubmissions.disputeId,
+                            input.disputeId,
+                        ),
+                        eq(
+                            disputeEvidenceSubmissions.evidenceType,
+                            input.evidenceType,
+                        ),
+                    ),
+                });
 
-    if (existingSubmission) {
-        if (!existingSubmission.evidenceRequestId && input.evidenceRequestId) {
+            if (submission?.status === "SUBMITTED") {
+                if (
+                    !submission.evidenceRequestId &&
+                    input.evidenceRequestId
+                ) {
+                    const [updated] = await db
+                        .update(disputeEvidenceSubmissions)
+                        .set({ evidenceRequestId: input.evidenceRequestId })
+                        .where(
+                            eq(
+                                disputeEvidenceSubmissions.id,
+                                submission.id,
+                            ),
+                        )
+                        .returning();
+                    return updated;
+                }
+
+                return submission;
+            }
+
+            if (!submission) {
+                const [created] = await db
+                    .insert(disputeEvidenceSubmissions)
+                    .values({
+                        disputeId: input.disputeId,
+                        evidenceRequestId: input.evidenceRequestId,
+                        evidenceType: input.evidenceType,
+                        notes: input.notes,
+                        status: "PENDING",
+                    })
+                    .returning();
+                submission = created;
+            } else if (
+                input.evidenceRequestId &&
+                !submission.evidenceRequestId
+            ) {
+                const [updated] = await db
+                    .update(disputeEvidenceSubmissions)
+                    .set({
+                        evidenceRequestId: input.evidenceRequestId,
+                        notes: input.notes ?? submission.notes,
+                    })
+                    .where(
+                        eq(
+                            disputeEvidenceSubmissions.id,
+                            submission.id,
+                        ),
+                    )
+                    .returning();
+                submission = updated;
+            }
+
+            const [submitting] = await db
+                .update(disputeEvidenceSubmissions)
+                .set({
+                    status: "SUBMITTING",
+                    notes: input.notes ?? submission.notes,
+                })
+                .where(
+                    eq(
+                        disputeEvidenceSubmissions.id,
+                        submission.id,
+                    ),
+                )
+                .returning();
+            submission = submitting;
+
+            // Recover safely if a previous process reached PayPal but crashed
+            // before persisting the successful local submission. PayPal's
+            // dispute representation is the external source of truth here.
+            const providerDispute = await paypalDisputes.get(
+                input.providerDisputeId,
+            );
+            const existingProviderEvidence = (providerDispute.evidences ?? []).find(
+                (evidence) =>
+                    String(
+                        evidence.evidence_type ?? evidence.type ?? "",
+                    ) === input.evidenceType &&
+                    String(evidence.source ?? "") === "SUBMITTED_BY_SELLER",
+            );
+
+            if (existingProviderEvidence) {
+                const [updated] = await db
+                    .update(disputeEvidenceSubmissions)
+                    .set({
+                        status: "SUBMITTED",
+                        providerResponse: existingProviderEvidence,
+                        submittedAt:
+                            typeof existingProviderEvidence.date === "string"
+                                ? new Date(existingProviderEvidence.date)
+                                : new Date(),
+                    })
+                    .where(
+                        eq(
+                            disputeEvidenceSubmissions.id,
+                            submission.id,
+                        ),
+                    )
+                    .returning();
+
+                await db
+                    .update(disputes)
+                    .set({ updatedAt: new Date() })
+                    .where(eq(disputes.id, input.disputeId));
+
+                return updated;
+            }
+
+            const result = await paypalDisputes.provideEvidence(
+                input.providerDisputeId,
+                {
+                    evidence_type: input.evidenceType,
+                    notes: input.notes,
+                },
+            );
+
             const [updated] = await db
                 .update(disputeEvidenceSubmissions)
                 .set({
-                    evidenceRequestId: input.evidenceRequestId,
+                    status: "SUBMITTED",
+                    providerResponse: result,
+                    submittedAt: new Date(),
                 })
-                .where(eq(disputeEvidenceSubmissions.id, existingSubmission.id))
+                .where(
+                    eq(
+                        disputeEvidenceSubmissions.id,
+                        submission.id,
+                    ),
+                )
                 .returning();
 
+            await db
+                .update(disputes)
+                .set({ updatedAt: new Date() })
+                .where(eq(disputes.id, input.disputeId));
+
             return updated;
-        }
-
-        return existingSubmission;
-    }
-
-    const result = await paypalDisputes.provideEvidence(
-        input.providerDisputeId,
-        {
-            evidence_type: input.evidenceType,
-            notes: input.notes,
         },
+        { ttlMs: 90_000, waitMs: 10_000 },
     );
-
-    const [submission] = await db
-        .insert(disputeEvidenceSubmissions)
-        .values({
-            disputeId: input.disputeId,
-            evidenceRequestId: input.evidenceRequestId,
-            evidenceType: input.evidenceType,
-            notes: input.notes,
-            status: "SUBMITTED",
-            providerResponse: result,
-            submittedAt: new Date(),
-        })
-        .returning();
-
-    await db
-        .update(disputes)
-        .set({ updatedAt: new Date() })
-        .where(eq(disputes.id, input.disputeId));
-
-    return submission;
 }
+

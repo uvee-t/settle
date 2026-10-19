@@ -1,3 +1,11 @@
+## 0.12.0
+
+- Added Redis-backed concurrency locks for AI defense generation and PayPal evidence submission.
+- Added crash recovery for evidence submission using provider-side evidence reconciliation.
+- Added `SUBMITTING` evidence submission state.
+- Added concrete evidence submission IDs/types to evidence-pack audit metadata.
+- Added `.env.example` and removed secret-bearing environment files from release artifacts.
+
 ## 0.10.0
 - Added milestone delivery and acceptance lifecycle.
 - Added verified document attachments to deliveries.
