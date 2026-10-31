@@ -34,12 +34,17 @@ async function resolveDatabaseHost(): Promise<string> {
 
   for (const address of addresses) {
     if (await canConnect(address, port)) {
-      logger.info({ hostname, address }, "Selected reachable PostgreSQL IPv4 address");
+      logger.info(
+        { hostname, address },
+        "Selected reachable PostgreSQL IPv4 address",
+      );
       return address;
     }
   }
 
-  throw new Error(`No reachable IPv4 address found for PostgreSQL host ${hostname}`);
+  throw new Error(
+    `No reachable IPv4 address found for PostgreSQL host ${hostname}`,
+  );
 }
 
 const databaseHost = await resolveDatabaseHost();

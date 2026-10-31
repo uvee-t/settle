@@ -1,27 +1,60 @@
-# Settle React frontend (v0.13.1)
+# Settle frontend
 
-This is the React + Vite replacement frontend. The existing Fastify API and database schema remain in place. It uses React Router browser URLs, the existing bearer-token + `x-workspace-id` API contract, and responsive CSS based on the supplied Universal Dashboard Design prompt.
+React 19 + Vite + React Router. Talks to the existing Fastify API unchanged: bearer token, `x-workspace-id` header, refresh through `POST /v1/auth/refresh`.
 
-## Local development
+## Run
 
-1. Start the existing API on port 4000 using the project's normal `.env` and database setup.
-2. From the repository root run `npm install` for the backend dependencies if needed.
-3. Run `npm install --prefix frontend`.
-4. Run `npm run frontend:dev` and open `http://localhost:5173`.
-5. If your API is elsewhere, set `VITE_SETTLE_API_URL` before starting Vite, e.g. `VITE_SETTLE_API_URL=http://localhost:4000 npm run frontend:dev`.
+```
+npm install
+VITE_SETTLE_API_URL=http://localhost:4000 npm run dev     # http://localhost:5173
+npm run build && npm run preview                          # http://localhost:4173
+npm test                                                  # unit tests for balances, status, forecast, CSV
+```
 
-## Production build
+Serve `dist/` with a fallback to `index.html` so deep links survive a refresh. Keep `/v1/*` and `/webhooks/*` routed to the API.
 
-`npm run frontend:build` creates `frontend/dist`. Serve it through a static host configured to fall back to `index.html` for frontend routes, while keeping `/v1/*`, `/webhooks/*`, and asset paths routed appropriately. Vite preview (`npm --prefix frontend run preview`) supports SPA history fallback for local smoke tests.
+## Structure
 
-## Included workflows
+```
+src/
+  main.jsx                 router, route guard, lazy-loaded pages
+  styles/                  tokens.css (all colors, both themes), app.css, marketing.css
+  services/api.js          API client (same contract; one shared refresh, auth-expired event)
+  lib/
+    format.js              money, dates, CSV with formula-injection protection
+    models.js              API record normalizers, invoice/payment ledger (balance + one status)
+    analytics.js           aging, status distribution, weekly buckets, deterministic forecast
+    hooks.js               useData (shared in-flight requests), useLedger
+    upload.js              validate, SHA-256, signed-URL upload, register document
+  components/              ui.jsx (kit), charts.jsx, AppShell.jsx, Brand.jsx
+  features/                marketing, auth, dashboard, clients, contracts, invoices,
+                           payments, cashflow, disputes, documents, reports, settings
+```
 
-- URL routes: `/dashboard`, `/clients`, `/invoices`, `/invoices/:id`, `/contracts`, `/contracts/:id`, `/payments`, `/disputes`, `/documents`, `/cashflow`, `/settings`, `/login`, `/register`.
-- Client creation and editing using `POST /v1/clients` and the new workspace-scoped `PATCH /v1/clients/:id` route.
-- Invoice create/detail, send through the existing `POST /v1/invoices/:id/send`, reminder, and cancel actions.
-- Contract detail, milestone creation, completion and billing through existing milestone endpoints.
-- Responsive layouts, keyboard-closable dialogs, loading/error/empty states, and API error messages.
+## Routes
 
-## PayPal account connection limitation
+`/` `/login` `/register` `/onboarding` `/dashboard` `/clients` `/clients/new` `/clients/:id` `/contracts` `/contracts/new` `/contracts/:id` `/invoices` `/invoices/new` `/invoices/:id` `/payments` `/cashflow` `/disputes` `/disputes/:id` `/documents` `/reports` `/settings`
 
-Invoice sending is wired to the existing backend route. Seller-specific PayPal account onboarding is **not** simulated: production-quality connect-your-own-account support requires PayPal partner/merchant onboarding credentials and consent configuration, plus secure persistence of the merchant association. The Settings page explains this rather than showing a fake connected state.
+## API endpoints used
+
+Auth: `POST /v1/auth/{login,register,refresh}`.
+Read: `GET /v1/{dashboard/summary,dashboard/cash-flow?days=,invoices,invoices/:id,payments,clients,contracts,contracts/:id,disputes,disputes/:providerId,documents,workspace,paypal/connection}`.
+Write: `POST/PATCH /v1/clients`, `POST /v1/invoices` (with `Idempotency-Key`), `POST /v1/invoices/:id/{send,remind,cancel}`, `POST /v1/contracts`, `POST /v1/contracts/:id/milestones`, `PATCH /v1/milestones/:id`, `POST /v1/milestones/:id/bill`, `PATCH /v1/workspace`, `PUT/DELETE /v1/paypal/connection`, documents upload flow, dispute sync, evidence-pack and message routes.
+
+No new endpoints or migrations are required.
+
+## How numbers are defined
+
+- **Balance** = invoice amount minus successful payments, never below zero. Drafts and cancelled invoices have no balance.
+- **Status** (one per invoice): cancelled, draft, paid, overdue (past due with a balance, even if part-paid), partially paid, sent.
+- **Collected** is by payment date. **Invoiced** is by issue date. **Outstanding** uses the API summary when it matches the selected currency.
+- **Forecast** is arithmetic, not prediction: open balances land in the week of their due date, shifted by a client's median days late when they have two or more fully paid invoices. Overdue balances are shown separately. Amounts in different currencies are never combined.
+- Aggregations run in the browser over the invoice, payment, client and contract lists. For very large workspaces, add server-side aggregation.
+
+## Not included, and why
+
+- Backend, migrations, workspace-isolation and webhook tests: the backend was not part of this upload.
+- `/milestones`, `/activity`, `/payments/:id`: no list endpoint for milestones, no audit endpoint, no payment detail endpoint exists in the contract used here.
+- Forgot password, remember me, OAuth, profile editing, password change, session list, notification preferences, client archive: the API calls for them are not in the current contract.
+- Reminder history and dispute timeline: not returned by the API.
+- Contract PDF/DOCX extraction and confidence scores: no extraction endpoint is exposed. Documents are stored and verified only.

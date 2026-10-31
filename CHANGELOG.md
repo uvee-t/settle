@@ -29,3 +29,12 @@
 - Reconcile PayPal seller transaction IDs only through exact provider identifiers/payload matches; no fuzzy financial matching.
 - Correct PayPal response deadline and seller-protection mapping from current dispute payload shapes.
 - Evidence collection prefers persisted dispute financial links and only treats accepted deliveries as fulfillment evidence.
+
+## Unreleased — PayPal dispute messaging and Backblaze B2
+
+- Corrected PayPal dispute `send-message` JSON to `{ "message": "<text>" }`.
+- Added a regression test for the PayPal message request payload.
+- Added Backblaze B2 S3-compatible endpoint, region, bucket, and application-key configuration.
+- Kept legacy AWS S3 environment variables as a fallback for a controlled transition.
+- Removed the AWS-specific SSE header from browser upload signing; encryption is managed by the configured private B2 bucket.
+- Added `BACKBLAZE_B2_MIGRATION.md` and `.env.backblaze.example`.

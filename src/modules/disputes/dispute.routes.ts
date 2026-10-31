@@ -9,6 +9,7 @@ import { db } from "../../db/client.js";
 import { NotFoundError } from "../../lib/errors.js";
 import { submitEvidence, syncDispute } from "./dispute.service.js";
 import { writeAudit } from "../../lib/audit.js";
+import { generateDisputeCopilot } from "../ai/ai.service.js";
 
 const idSchema = z.object({ disputeId: z.string().min(1) });
 
@@ -125,6 +126,30 @@ export async function disputeRoutes(app: FastifyInstance) {
             });
 
             return result;
+        },
+    );
+
+    app.post(
+        "/v1/disputes/:disputeId/ai-copilot",
+        { preHandler: requireRole("owner", "admin", "member") },
+        async (request) => {
+            const { disputeId } = idSchema.parse(request.params);
+            const local = await db.query.disputes.findFirst({
+                where: and(
+                    eq(disputes.providerDisputeId, disputeId),
+                    eq(disputes.workspaceId, request.auth!.workspaceId!),
+                ),
+            });
+            if (!local) throw new NotFoundError("Dispute not found in this workspace.");
+            const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
+            const provider = await adapter.get(disputeId);
+            const messages = Array.isArray((provider as any).messages) ? (provider as any).messages : [];
+            const result = await generateDisputeCopilot({
+                workspaceId: request.auth!.workspaceId!,
+                dispute: { local, provider },
+                messages,
+            });
+            return { ...result, messages, provider };
         },
     );
 

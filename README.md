@@ -199,3 +199,8 @@ The frontend production build was verified during preparation. Full backend type
 ## Fresh database
 
 For a brand-new empty database, see [`FRESH_DATABASE_SETUP.md`](./FRESH_DATABASE_SETUP.md) and use `npm run db:migrate:fresh`. Do not use the fresh baseline against an existing database.
+
+
+## Storage provider migration
+
+See [Backblaze B2 migration and deployment instructions](BACKBLAZE_B2_MIGRATION.md) and `.env.backblaze.example` for the private B2 bucket configuration.

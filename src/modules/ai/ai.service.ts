@@ -463,3 +463,70 @@ export async function generateDisputeDefense(input: {
   );
 }
 
+
+
+const disputeCopilotSchema = z.object({
+    case_summary: z.string().max(5000),
+    buyer_intent: z.string().max(3000),
+    sentiment: z.string().max(1000),
+    risk_level: z.enum(["LOW", "MEDIUM", "HIGH", "CRITICAL"]),
+    risk_reasons: z.array(z.string()).max(12),
+    evidence_strengths: z.array(z.string()).max(15),
+    evidence_gaps: z.array(z.string()).max(15),
+    contradictions: z.array(z.string()).max(12),
+    recommended_actions: z.array(z.object({
+        priority: z.enum(["NOW", "HIGH", "MEDIUM", "LOW"]),
+        action: z.string(),
+        rationale: z.string(),
+    })).max(12),
+    suggested_reply: z.string().max(5000),
+    defense_strategy: z.string().max(8000),
+    confidence: z.number().min(0).max(1),
+    caveats: z.array(z.string()).max(12),
+});
+
+export async function generateDisputeCopilot(input: {
+    workspaceId: string;
+    dispute: unknown;
+    messages: unknown;
+    evidence?: unknown;
+}) {
+    const serialized = JSON.stringify(input);
+    const inputHash = createHash("sha256").update(serialized).digest("hex");
+    return withRedisLock(
+        `settle:ai:dispute-copilot:${input.workspaceId}:${inputHash}`,
+        async () => {
+            const existing = await db.query.aiRuns.findFirst({
+                where: and(
+                    eq(aiRuns.workspaceId, input.workspaceId),
+                    eq(aiRuns.task, "dispute.copilot"),
+                    eq(aiRuns.provider, env.AI_PROVIDER),
+                    eq(aiRuns.model, env.AI_MODEL),
+                    eq(aiRuns.promptVersion, "dispute-copilot-v1"),
+                    eq(aiRuns.inputHash, inputHash),
+                    eq(aiRuns.status, "SUCCEEDED"),
+                ),
+            });
+            if (existing) return { run: existing, result: disputeCopilotSchema.parse(existing.result) };
+
+            const prompt = `You are Settle's evidence-grounded dispute resolution copilot. Analyze the supplied PayPal dispute, actual conversation messages, and evidence. Never invent facts, dates, delivery, acceptance, amounts, policies, or messages. Distinguish verified facts from inference. If data is absent, say so. Do not provide legal advice or guarantee outcomes. Draft replies must be professional, factual, non-threatening, and must not claim evidence that is not present. Return only JSON matching this schema: {"case_summary":"","buyer_intent":"","sentiment":"","risk_level":"LOW|MEDIUM|HIGH|CRITICAL","risk_reasons":[],"evidence_strengths":[],"evidence_gaps":[],"contradictions":[],"recommended_actions":[{"priority":"NOW|HIGH|MEDIUM|LOW","action":"","rationale":""}],"suggested_reply":"","defense_strategy":"","confidence":0.0,"caveats":[]}\n\nINPUT:\n${serialized}`;
+            const result = await requestProvider(prompt);
+            const parsed = disputeCopilotSchema.parse(result.parsed);
+            const [run] = await db.insert(aiRuns).values({
+                workspaceId: input.workspaceId,
+                task: "dispute.copilot",
+                provider: env.AI_PROVIDER,
+                model: env.AI_MODEL,
+                promptVersion: "dispute-copilot-v1",
+                inputHash,
+                status: "SUCCEEDED",
+                result: parsed,
+                tokensIn: result.tokensIn == null ? undefined : String(result.tokensIn),
+                tokensOut: result.tokensOut == null ? undefined : String(result.tokensOut),
+                latencyMs: String(result.latencyMs),
+            }).returning();
+            return { run, result: parsed };
+        },
+        { ttlMs: Math.max(env.AI_TIMEOUT_MS + 15_000, 60_000), waitMs: 10_000 },
+    );
+}

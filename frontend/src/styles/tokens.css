@@ -1,0 +1,77 @@
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=Geist+Mono:wght@400;500&display=swap');
+
+/* Settle design tokens. Every color in the app comes from here. */
+:root {
+  --bg: #ffffff;
+  --surface: #fafafa;
+  --surface-muted: #f4f4f5;
+  --canvas: #f8f7f4; /* warm off-white used on marketing pages */
+  --fg: #111111;
+  --text-2: #626262;
+  --text-3: #767676;
+  --border: #e5e5e5;
+  --border-strong: #d4d4d4;
+
+  --primary: #5145e5;
+  --primary-hover: #4338ca;
+  --on-primary: #ffffff;
+  --primary-bg: #eeedfd;
+
+  --cyan: #1bb6d3;
+  --violet: #8576f5;
+  --pink: #e470c3;
+  --orange: #f0832a;
+
+  --success: #16845b;
+  --warning: #b96b08;
+  --danger: #c83b4b;
+  --success-bg: #e8f4ee;
+  --warning-bg: #fbf1e0;
+  --danger-bg: #fbecee;
+  --violet-bg: #f0eefe;
+  --muted-bg: #f1f1f2;
+
+  --hover: rgba(17, 17, 17, 0.04);
+  --shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --scrim: rgba(0, 0, 0, 0.35);
+
+  --sans: 'Geist', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --mono: 'Geist Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --r: 6px;
+  --sidebar-w: 240px;
+  color-scheme: light;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --bg: #0e0e10;
+    --surface: #141416;
+    --surface-muted: #1b1b1e;
+    --canvas: #121214;
+    --fg: #f2f2f3;
+    --text-2: #a3a3a8;
+    --text-3: #8a8a90;
+    --border: #26262a;
+    --border-strong: #38383d;
+    --primary: #8b83ff;
+    --primary-hover: #a29bff;
+    --on-primary: #0e0e10;
+    --primary-bg: #1d1b3a;
+    --cyan: #40d8f2;
+    --violet: #9b8cff;
+    --pink: #f49bd8;
+    --orange: #ff9b48;
+    --success: #3cc48d;
+    --warning: #e6a04a;
+    --danger: #f0707e;
+    --success-bg: #142720;
+    --warning-bg: #2b2112;
+    --danger-bg: #2b1a1d;
+    --violet-bg: #221f3d;
+    --muted-bg: #1f1f23;
+    --hover: rgba(255, 255, 255, 0.05);
+    --shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+    --scrim: rgba(0, 0, 0, 0.6);
+    color-scheme: dark;
+  }
+}

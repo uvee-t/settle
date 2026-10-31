@@ -11,25 +11,43 @@ import net from "node:net";
 import { env } from "../../config/env.js";
 import { ExternalServiceError, ValidationError } from "../../lib/errors.js";
 
-function client() {
-    if (
-        !env.AWS_S3_BUCKET ||
-        !env.AWS_ACCESS_KEY_ID ||
-        !env.AWS_SECRET_ACCESS_KEY
-    ) {
+function storageConfig() {
+    const bucket = env.B2_BUCKET ?? env.AWS_S3_BUCKET;
+    const accessKeyId = env.B2_KEY_ID ?? env.AWS_ACCESS_KEY_ID;
+    const secretAccessKey = env.B2_APPLICATION_KEY ?? env.AWS_SECRET_ACCESS_KEY;
+    if (!bucket || !accessKeyId || !secretAccessKey) {
         throw new ExternalServiceError(
-            "S3_NOT_CONFIGURED",
-            "S3 storage is not configured.",
+            "STORAGE_NOT_CONFIGURED",
+            "Object storage is not configured. Set B2_BUCKET, B2_KEY_ID and B2_APPLICATION_KEY.",
             503,
         );
     }
+    const useBackblaze = Boolean(env.B2_BUCKET || env.B2_KEY_ID || env.B2_APPLICATION_KEY);
+    return {
+        bucket,
+        accessKeyId,
+        secretAccessKey,
+        region: useBackblaze ? env.B2_REGION : env.AWS_REGION,
+        endpoint: useBackblaze ? env.B2_ENDPOINT : undefined,
+        forcePathStyle: useBackblaze,
+    };
+}
+
+function client() {
+    const config = storageConfig();
     return new S3Client({
-        region: env.AWS_REGION,
+        region: config.region,
+        ...(config.endpoint ? { endpoint: config.endpoint } : {}),
+        forcePathStyle: config.forcePathStyle,
         credentials: {
-            accessKeyId: env.AWS_ACCESS_KEY_ID,
-            secretAccessKey: env.AWS_SECRET_ACCESS_KEY,
+            accessKeyId: config.accessKeyId,
+            secretAccessKey: config.secretAccessKey,
         },
     });
+}
+
+function bucketName() {
+    return storageConfig().bucket;
 }
 
 function allowedContentTypes() {
@@ -77,11 +95,10 @@ export async function createUploadUrl(input: {
     const key = `workspaces/${input.workspaceId}/documents/${randomUUID()}-${safeFilename}`;
 
     const command = new PutObjectCommand({
-        Bucket: env.AWS_S3_BUCKET,
+        Bucket: bucketName(),
         Key: key,
         ContentType: input.contentType,
         ContentLength: input.sizeBytes,
-        ServerSideEncryption: "AES256",
     });
     return {
         key,
@@ -89,8 +106,6 @@ export async function createUploadUrl(input: {
         expires_in_seconds: 900,
         required_headers: {
             "content-type": input.contentType,
-            "content-length": String(input.sizeBytes),
-            "x-amz-server-side-encryption": "AES256",
         },
     };
 }
@@ -99,7 +114,7 @@ export async function downloadStoredObject(key: string, workspaceId: string): Pr
   if (!key.startsWith(`workspaces/${workspaceId}/documents/`)) {
     throw new ValidationError("Document storage key does not belong to this workspace.");
   }
-  const response = await client().send(new GetObjectCommand({ Bucket: env.AWS_S3_BUCKET, Key: key }));
+  const response = await client().send(new GetObjectCommand({ Bucket: bucketName(), Key: key }));
   if (!response.Body) throw new ValidationError("Document object has no readable body.");
   const chunks: Buffer[] = [];
   for await (const chunk of response.Body as AsyncIterable<Uint8Array>) chunks.push(Buffer.from(chunk));
@@ -115,7 +130,7 @@ export async function createDownloadUrl(key: string, workspaceId: string) {
         );
     }
     const command = new GetObjectCommand({
-        Bucket: env.AWS_S3_BUCKET,
+        Bucket: bucketName(),
         Key: key,
     });
     return { url: await getSignedUrl(client(), command, { expiresIn: 900 }) };
@@ -126,7 +141,7 @@ export async function headObject(key: string, workspaceId: string) {
     try {
         return await client().send(
             new HeadObjectCommand({
-                Bucket: env.AWS_S3_BUCKET,
+                Bucket: bucketName(),
                 Key: key,
                 ChecksumMode: "ENABLED",
             }),
@@ -263,7 +278,7 @@ export async function verifyStoredDocument(input: {
 
     const response = await client().send(
         new GetObjectCommand({
-            Bucket: env.AWS_S3_BUCKET,
+            Bucket: bucketName(),
             Key: input.objectKey,
         }),
     );

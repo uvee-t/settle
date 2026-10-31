@@ -19,6 +19,13 @@ const schema = z.object({
 
     CORS_ORIGIN: z.string().default("http://localhost:5173"),
 
+    // Backblaze B2 S3-compatible storage. Legacy AWS variables remain as
+    // fallbacks so existing deployments can migrate without a code rollback.
+    B2_ENDPOINT: z.url().default("https://s3.us-east-005.backblazeb2.com"),
+    B2_REGION: z.string().default("us-east-005"),
+    B2_BUCKET: z.string().optional(),
+    B2_KEY_ID: z.string().optional(),
+    B2_APPLICATION_KEY: z.string().optional(),
     AWS_REGION: z.string().default("ap-south-1"),
     AWS_ACCESS_KEY_ID: z.string().optional(),
     AWS_SECRET_ACCESS_KEY: z.string().optional(),

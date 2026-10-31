@@ -126,7 +126,7 @@ export class PayPalDisputeAdapter {
             {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ message: { content } }),
+                body: JSON.stringify({ message: content.trim() }),
             },
         );
     }
