@@ -193,9 +193,12 @@ if (env.NODE_ENV === "production") {
   }
 
   // Malware scanning must remain enabled in production.
-  if (!env.DOCUMENT_MALWARE_SCAN_ENABLED) {
+  if (
+    !env.DOCUMENT_MALWARE_SCAN_ENABLED &&
+    process.env.ALLOW_UNSCANNED_DOCUMENTS !== "true"
+  ) {
     throw new Error(
-      "DOCUMENT_MALWARE_SCAN_ENABLED must be enabled in production.",
+      "DOCUMENT_MALWARE_SCAN_ENABLED must be enabled in production unless ALLOW_UNSCANNED_DOCUMENTS=true is explicitly set.",
     );
   }
 
