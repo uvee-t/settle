@@ -39,6 +39,13 @@ export function DisputeDetail() {
       const providerId = local.providerDisputeId || local.provider_dispute_id;
       const detail = await api(`/v1/disputes/${encodeURIComponent(providerId)}`);
       setRecord({ ...detail.local, ...(detail.provider || {}), id: local.id, providerDisputeId: providerId, local });
+      // Loading dispute details syncs the latest PayPal state on the backend.
+      // Refresh an already-open evidence pack afterwards so its requirement
+      // state cannot remain stale after the provider refresh.
+      if (pack) {
+        const refreshedPack = await api(`/v1/disputes/${id}/evidence-pack`);
+        setPack(refreshedPack);
+      }
     } catch (e) { setLoadError(e.message); } finally { setLoading(false); }
   }
   useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -149,10 +156,10 @@ export function DisputeDetail() {
 
             {!pack ? <EmptyState title="No evidence pack yet">Generate one to collect the relevant records and prepare your response.</EmptyState> : (
               <>
-                {requirementRows.length > 0 && <div className="stack" style={{ marginBottom: 16 }}><h3>PayPal evidence requirements</h3><div className="evidence-summary">{requirementRows.map((r) => <div key={r.type}><span>{titleCase(r.type.replaceAll('_', ' '))}{r.required ? ' · Required' : ' · Optional'}</span><b style={{ color: r.matches ? 'var(--success)' : 'var(--danger)' }}>{r.matches ? `${r.matches} matched` : 'Missing'}</b></div>)}</div><p className="note">Evidence is matched only to the exact type requested by PayPal. For example, proof of fulfillment does not automatically satisfy OTHER.</p></div>}
+                {requirementRows.length > 0 ? <div className="stack" style={{ marginBottom: 16 }}><h3>PayPal evidence requirements</h3><div className="evidence-summary">{requirementRows.map((r) => <div key={r.type}><span>{titleCase(r.type.replaceAll('_', ' '))}{r.required ? ' · Required' : ' · Optional'}</span><b style={{ color: r.matches ? 'var(--success)' : 'var(--danger)' }}>{r.matches ? `${r.matches} matched` : 'Missing'}</b></div>)}</div><p className="note">Evidence is matched only to the exact type requested by PayPal. For example, proof of fulfillment does not automatically satisfy OTHER.</p></div> : <Notice kind="info">PayPal has not provided seller evidence requirements for this dispute. You can prepare and analyze supporting evidence in Settle, but submission to PayPal remains unavailable until the provider supplies requirements and the case supports evidence submission. Suggested evidence types are guidance only, not PayPal requirements: {(pack.suggested_evidence_types || []).map((x) => titleCase(String(x).replaceAll('_', ' '))).join(', ') || 'none available'}.</Notice>}
                 <div className="evidence-summary">
                   <div><span>Evidence items</span><b>{pack.items?.length || 0}</b></div>
-                  <div><span>Missing evidence</span><b>{pack.missing_evidence?.length || 0}</b></div>
+                  <div><span>Missing evidence</span><b>{requirementRows.length ? (pack.missing_evidence?.length || 0) : '—'}</b></div>
                   <div><span>Strength score</span><b>{pack.evidence_pack?.strengthScore ?? pack.evidence_pack?.strength_score ?? '—'}</b></div>
                 </div>
                 {pack.missing_evidence?.length > 0 && <Notice>Missing evidence: {pack.missing_evidence.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(', ')}</Notice>}
@@ -169,7 +176,7 @@ export function DisputeDetail() {
                 <div className="actions-row">
                   <Button disabled={busy || locked} onClick={() => review('reject')}>Reject draft</Button>
                   <Button variant="primary" icon={CheckCircle2} disabled={busy || locked || !pack.items?.some(isSel)} onClick={() => review('approve')}>Approve selected evidence</Button>
-                  <Button variant="primary" icon={Send} disabled={busy || status !== 'APPROVED' || (requirementRows.length > 0 && requirementRows.some((r) => r.required && !r.matches))} onClick={() => setConfirmSubmit(true)}>Submit to PayPal</Button>
+                  <Button variant="primary" icon={Send} disabled={busy || status !== 'APPROVED' || requirementRows.length === 0 || requirementRows.some((r) => r.required && !r.matches)} onClick={() => setConfirmSubmit(true)}>Submit to PayPal</Button>
                 </div>
               </>
             )}

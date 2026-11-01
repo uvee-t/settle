@@ -194,30 +194,39 @@ export async function syncDispute(
         })
         .returning();
 
-    for (const evidence of payload.evidences ?? []) {
-        const evidenceType = String(
-            evidence.evidence_type ?? evidence.type ?? "UNKNOWN",
-        );
+    if (Array.isArray(payload.evidences)) {
+        // PayPal's `evidences` collection represents evidence already present
+        // on the case (often buyer-submitted), not a generic list of seller
+        // requirements. Reconcile the snapshot and persist only entries that
+        // PayPal explicitly marks as requested from the seller.
         await db
-            .insert(disputeEvidenceRequests)
-            .values({
+            .delete(disputeEvidenceRequests)
+            .where(eq(disputeEvidenceRequests.disputeId, row.id));
+        for (const evidence of payload.evidences) {
+            if (String(evidence.source ?? "").toUpperCase() !== "REQUESTED_FROM_SELLER") {
+                continue;
+            }
+            const evidenceType = String(
+                evidence.evidence_type ?? evidence.type ?? "",
+            ).trim();
+            if (!evidenceType) continue;
+            await db.insert(disputeEvidenceRequests).values({
                 disputeId: row.id,
                 providerEvidenceType: evidenceType,
-                source: String(evidence.source ?? ""),
+                source: "REQUESTED_FROM_SELLER",
                 required: String(evidence.required ?? true),
                 status: String(evidence.status ?? "PENDING"),
                 metadata: evidence,
                 dueAt: payload.seller_response_due_date
                     ? new Date(payload.seller_response_due_date)
                     : undefined,
-            })
-            .onConflictDoUpdate({
+            }).onConflictDoUpdate({
                 target: [
                     disputeEvidenceRequests.disputeId,
                     disputeEvidenceRequests.providerEvidenceType,
                 ],
                 set: {
-                    source: String(evidence.source ?? ""),
+                    source: "REQUESTED_FROM_SELLER",
                     required: String(evidence.required ?? true),
                     status: String(evidence.status ?? "PENDING"),
                     metadata: evidence,
@@ -227,6 +236,7 @@ export async function syncDispute(
                     updatedAt: new Date(),
                 },
             });
+        }
     }
 
     if (row.workspaceId) {

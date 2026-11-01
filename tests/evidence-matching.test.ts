@@ -8,6 +8,11 @@ describe("PayPal evidence matching", () => {
   it("does not silently treat fulfillment as OTHER", () => {
     expect(evidenceMatchesRequirement("PROOF_OF_FULFILLMENT", "OTHER")).toBe(false);
   });
+  it("treats an empty provider requirement list as no provider requirements", () => {
+    expect(getEvidenceRequirementStatus([], [
+      { evidenceType: "PROOF_OF_FULFILLMENT", selected: "true" },
+    ])).toEqual([]);
+  });
   it("reports unmatched and matched requirements separately", () => {
     const result = getEvidenceRequirementStatus(
       [{ providerEvidenceType: "OTHER", required: "true" }, { providerEvidenceType: "PROOF_OF_REFUND", required: "true" }],

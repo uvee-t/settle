@@ -1372,11 +1372,22 @@ const aiWorker = new Worker(
             );
 
             if (!generated.candidates.length) {
-                logger.warn(
-                    { disputeId, packId: generated.packId, missingEvidence: generated.missing },
-                    "Dispute analysis skipped: no evidence candidates match the PayPal requirements",
+                logger.info(
+                    {
+                        disputeId,
+                        packId: generated.packId,
+                        providerRequirementsAvailable: generated.providerRequirementsAvailable,
+                        suggestedEvidenceTypes: generated.suggestedRequirements,
+                    },
+                    "Dispute analysis skipped: no local evidence candidates are available yet",
                 );
-                return { status: "needs_evidence", packId: generated.packId, missingEvidence: generated.missing };
+                return {
+                    status: "needs_evidence",
+                    reason: "NO_LOCAL_EVIDENCE_CANDIDATES",
+                    packId: generated.packId,
+                    missingEvidence: generated.missing,
+                    providerRequirementsAvailable: generated.providerRequirementsAvailable,
+                };
             }
 
             await analyzeEvidencePack(generated.packId, workspaceId);

@@ -22,7 +22,7 @@ import {
 } from "../../db/schema/ai.js";
 import { disputeEvidenceRequests } from "../../db/schema/evidence.js";
 import { generateDisputeDefense } from "../ai/ai.service.js";
-import { NotFoundError, ValidationError } from "../../lib/errors.js";
+import { NotFoundError } from "../../lib/errors.js";
 import { writeAudit } from "../../lib/audit.js";
 import { evidenceMatchesRequirement } from "./evidence-matching.js";
 
@@ -220,10 +220,16 @@ export async function generateEvidencePack(
         await db.query.disputeEvidenceRequests.findMany({
             where: eq(disputeEvidenceRequests.disputeId, disputeId),
         });
-    const required = providerRequirements.length
-        ? providerRequirements.map((r) => r.providerEvidenceType)
-        : (DEFAULT_REQUIREMENTS[collected.dispute.reason ?? "UNKNOWN"] ??
-          DEFAULT_REQUIREMENTS.UNKNOWN);
+    // Only provider-returned seller requirements are authoritative. A locally
+    // inferred default is useful guidance, but must never be presented as a
+    // PayPal requirement or used to block preparation of internal evidence.
+    const sellerRequirements = providerRequirements.filter(
+        (r) => !r.source || r.source === "REQUESTED_FROM_SELLER",
+    );
+    const required = sellerRequirements.map((r) => r.providerEvidenceType);
+    const suggestedRequirements = DEFAULT_REQUIREMENTS[
+        collected.dispute.reason ?? "UNKNOWN"
+    ] ?? DEFAULT_REQUIREMENTS.UNKNOWN;
 
     const candidates: Array<{
         evidenceType: string;
@@ -338,6 +344,8 @@ export async function generateEvidencePack(
             strengthScore: "0",
             analysis: {
                 required_evidence: required,
+                provider_requirements_available: sellerRequirements.length > 0,
+                suggested_evidence_types: suggestedRequirements,
                 generated_at: new Date().toISOString(),
             },
             updatedAt: new Date(),
@@ -349,6 +357,8 @@ export async function generateEvidencePack(
                 updatedAt: new Date(),
                 analysis: {
                     required_evidence: required,
+                    provider_requirements_available: sellerRequirements.length > 0,
+                    suggested_evidence_types: suggestedRequirements,
                     generated_at: new Date().toISOString(),
                 },
             },
@@ -365,8 +375,14 @@ export async function generateEvidencePack(
     await db
         .delete(evidencePackItems)
         .where(eq(evidencePackItems.evidencePackId, pack.id));
+    // If PayPal has not supplied seller requirements (common during inquiry
+    // stage), retain relevant local candidates for internal review and AI
+    // analysis. Do not fabricate provider requirements from dispute reason.
     const selected = candidates
-        .filter((c) => required.some((r) => evidenceMatchesRequirement(c.evidenceType, r)))
+        .filter((c) =>
+            required.length === 0 ||
+            required.some((r) => evidenceMatchesRequirement(c.evidenceType, r)),
+        )
         .slice(0, 50);
     if (selected.length || manualItems.length)
         await db.insert(evidencePackItems).values(
@@ -418,6 +434,8 @@ export async function generateEvidencePack(
             strengthScore: String(strength),
             analysis: {
                 required_evidence: required,
+                provider_requirements_available: sellerRequirements.length > 0,
+                suggested_evidence_types: suggestedRequirements,
                 missing_evidence: missing,
                 candidate_count: candidates.length,
             },
@@ -428,6 +446,8 @@ export async function generateEvidencePack(
         packId: pack.id,
         collected,
         required,
+        providerRequirementsAvailable: sellerRequirements.length > 0,
+        suggestedRequirements,
         missing,
         candidates: [...selected, ...manualItems.filter((item) => item.selected === "true")],
         strengthScore: strength,
@@ -455,11 +475,18 @@ export async function analyzeEvidencePack(packId: string, workspaceId: string) {
             eq(evidencePackItems.selected, "true"),
         ),
     });
-    if (!items.length)
-        throw new ValidationError(
-            "Evidence pack has no evidence items. Attach at least one verified, relevant document or generate evidence from linked invoices, payments, contracts, deliveries, or communications before running AI analysis.",
-            { packId, disputeId: pack.disputeId, retryable: false },
-        );
+    if (!items.length) {
+        // Empty packs are a valid state while a user is still assembling
+        // evidence. Treat this as a completed no-op, not a retryable worker
+        // failure that will repeatedly consume BullMQ attempts.
+        return {
+            skipped: true,
+            reason: "NO_SELECTED_EVIDENCE",
+            message: "No evidence is selected yet. Attach or select relevant evidence before running AI analysis.",
+            pack,
+            items: [],
+        };
+    }
     const ai = await generateDisputeDefense({
         workspaceId,
         dispute: {

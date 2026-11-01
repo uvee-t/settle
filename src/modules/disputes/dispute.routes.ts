@@ -4,9 +4,10 @@ import { z } from "zod";
 import { workspacePayPalDisputes } from "../paypal/paypal.disputes.js";
 import { getWorkspacePayPalClient } from "../paypal/paypal.workspace.js";
 import { disputes } from "../../db/schema/disputes.js";
+import { disputeEvidenceRequests } from "../../db/schema/evidence.js";
 import { requireRole, requireWorkspace } from "../auth/auth.plugin.js";
 import { db } from "../../db/client.js";
-import { NotFoundError } from "../../lib/errors.js";
+import { NotFoundError, ValidationError } from "../../lib/errors.js";
 import { submitEvidence, syncDispute } from "./dispute.service.js";
 import { writeAudit } from "../../lib/audit.js";
 import { generateDisputeCopilot } from "../ai/ai.service.js";
@@ -108,6 +109,25 @@ export async function disputeRoutes(app: FastifyInstance) {
 
             if (!local) {
                 throw new NotFoundError("Dispute not found in this workspace.");
+            }
+
+            const providerRequirements = await db.query.disputeEvidenceRequests.findMany({
+                where: eq(disputeEvidenceRequests.disputeId, local.id),
+            });
+            const sellerRequirements = providerRequirements.filter(
+                (item) => !item.source || item.source === "REQUESTED_FROM_SELLER",
+            );
+            if (!sellerRequirements.length) {
+                throw new ValidationError(
+                    "PayPal has not provided seller evidence requirements for this dispute. Evidence can be prepared in Settle, but direct provider submission is unavailable until PayPal supplies seller requirements.",
+                    { disputeId: local.id, requirementsState: "not_provided", retryable: false },
+                );
+            }
+            if (!sellerRequirements.some((item) => item.providerEvidenceType.trim().toUpperCase() === body.evidence_type.trim().toUpperCase())) {
+                throw new ValidationError(
+                    "The evidence type does not match a seller evidence requirement returned by PayPal.",
+                    { requestedEvidenceType: body.evidence_type, allowedEvidenceTypes: sellerRequirements.map((item) => item.providerEvidenceType) },
+                );
             }
 
             const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));
