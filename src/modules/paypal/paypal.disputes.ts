@@ -1,4 +1,5 @@
 import { paypalClient, PayPalClient } from "./paypal.client.js";
+import { ValidationError } from "../../lib/errors.js";
 
 export type PayPalDispute = {
     dispute_id: string;
@@ -24,6 +25,14 @@ export type PayPalDispute = {
 export class PayPalDisputeAdapter {
     constructor(private readonly client: PayPalClient = paypalClient) {}
     async listByTransaction(transactionId: string) {
+        // PayPal's disputed_transaction_id filter expects the seller's 17-character
+        // alphanumeric transaction ID, not an order, invoice, dispute, or local ID.
+        if (!/^[A-Za-z0-9]{17}$/.test(transactionId)) {
+            throw new ValidationError(
+                "Enter the 17-character PayPal seller transaction ID from the completed payment. Do not use an order, invoice, or dispute ID.",
+                { field: "transactionId", expected: "17 alphanumeric characters" },
+            );
+        }
         return this.client.request<{ items: PayPalDispute[] }>(
             `/v1/customer/disputes?disputed_transaction_id=${encodeURIComponent(transactionId)}`,
         );

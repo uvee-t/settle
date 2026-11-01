@@ -41,7 +41,31 @@ npm test
 
 The PostgreSQL integration tests only run against a database URL ending in `/settle_test`; without `DATABASE_URL`, those tests are skipped. Never point them at a production database.
 
-AI extraction recovery uses stable per-document-content BullMQ job IDs, retries retained failed jobs, pages through the verified-document and successful-run sets, and guards extraction with a Redis lock. Successful extraction reuse is scoped to the workspace, provider/model, prompt version, document ID, and extracted-text hash. AI recovery remains disabled when `AI_ENABLED` is false. Dead-letter retry/recovery remains deferred; see `docs/Settle_v0.13.0_Deferred_Work_Dead_Letter_Retry.docx`.
+AI extraction recovery uses stable per-document-content BullMQ job IDs, retries retained failed jobs, pages through the verified-document and successful-run sets, and guards extraction with a Redis lock. Successful extraction reuse is scoped to the workspace, prompt version, document ID, and extracted-text hash, so a result produced by a fallback provider can also be reused. AI recovery remains disabled when `AI_ENABLED` is false. Dead-letter retry/recovery remains deferred; see `docs/Settle_v0.13.0_Deferred_Work_Dead_Letter_Retry.docx`.
+
+### AI provider resilience
+
+The AI gateway supports Gemini, OpenAI-compatible providers, and Groq. Configure the primary provider with `AI_PROVIDER`, `AI_MODEL`, and `AI_API_KEY`. An optional Groq or OpenAI-compatible fallback can be enabled with `AI_FALLBACK_PROVIDER`, `AI_FALLBACK_MODEL`, and `AI_FALLBACK_API_KEY`; set `AI_FALLBACK_BASE_URL` only when using a non-default endpoint.
+
+Fallback is attempted for provider rate limits (HTTP 429), server errors (HTTP 5xx), timeouts, and temporary network failures. Invalid requests, authentication failures, and invalid model output are not silently retried against another provider. Provider secrets are never returned by the AI status endpoint.
+
+AI requests share a Redis-backed fixed-window limit per provider. The defaults are deliberately conservative for free-tier use (`AI_RATE_LIMIT_MAX=4`, `AI_RATE_LIMIT_WINDOW_MS=60000`); adjust them to stay below the quotas for the exact provider/model/account you use. AI BullMQ jobs use exponential retry delays and honor a provider-supplied `Retry-After`/Gemini retry delay when available. Configure the same AI and Redis environment variables for the API and worker processes.
+
+Example optional Groq fallback:
+
+```env
+AI_PROVIDER=gemini
+AI_MODEL=gemini-2.5-flash
+AI_API_KEY=your-gemini-key
+
+AI_FALLBACK_PROVIDER=groq
+AI_FALLBACK_MODEL=your-enabled-groq-model
+AI_FALLBACK_API_KEY=your-groq-key
+AI_FALLBACK_BASE_URL=
+```
+
+Use model IDs enabled for your own provider account; model availability and free-tier quotas change over time.
+
 
 ## Requirements
 
@@ -204,3 +228,12 @@ For a brand-new empty database, see [`FRESH_DATABASE_SETUP.md`](./FRESH_DATABASE
 ## Storage provider migration
 
 See [Backblaze B2 migration and deployment instructions](BACKBLAZE_B2_MIGRATION.md) and `.env.backblaze.example` for the private B2 bucket configuration.
+
+
+### AI extraction and provider fallback troubleshooting
+
+- Gemini 404: verify `AI_MODEL` exists for the Gemini API version in use and that `AI_BASE_URL` is blank unless you intentionally override the endpoint. If a fallback is configured, primary-provider 404 responses are routed to the fallback once; the primary is not retried.
+- Groq fallback: configure `AI_FALLBACK_PROVIDER=groq`, `AI_FALLBACK_MODEL` with an exact model ID enabled for your account, and `AI_FALLBACK_API_KEY`. Leave `AI_FALLBACK_BASE_URL` blank to use Groq's default endpoint.
+- Contract amounts: extraction accepts monetary values as JSON strings or finite JSON numbers and normalizes them to strings before persistence. Other schema fields remain validated.
+- Redis `EAI_AGAIN`: this indicates DNS resolution failed for the hostname in `REDIS_URL`. The Redis client now reconnects with capped exponential backoff and jitter, but a stale/incorrect hostname or persistent DNS outage must still be fixed in Redis Cloud / the runtime DNS configuration. Verify with `getent hosts <redis-host>` and `redis-cli -u "$REDIS_URL" PING`.
+- PayPal transaction lookup: `/v1/disputes/by-transaction/:transactionId` requires the 17-character alphanumeric seller transaction ID returned in `disputed_transactions[].seller_transaction_id`. Do not pass an order ID, invoice ID, dispute ID, or local payment ID.

@@ -45,9 +45,9 @@ export function Disputes() {
       </div>
       <Notice>{error}</Notice>
       <Notice kind="success">{notice}</Notice>
-      <Card title="Look up a transaction" sub="Import disputes for one completed PayPal payment.">
+      <Card title="Look up a transaction" sub="Use the 17-character seller transaction ID from a completed PayPal payment. Order, invoice, and dispute IDs are not accepted.">
         <form className="form" onSubmit={byTxn} style={{ gridTemplateColumns: 'minmax(0,1fr) auto', alignItems: 'end' }}>
-          <TextField label="PayPal seller transaction ID" value={txn} onChange={(e) => setTxn(e.target.value)} placeholder="From the completed payment" />
+          <TextField label="PayPal seller transaction ID" value={txn} onChange={(e) => setTxn(e.target.value)} placeholder="17-character PayPal transaction ID" />
           <Button variant="primary" type="submit" loading={busy} disabled={!txn.trim()}>Find disputes</Button>
         </form>
       </Card>

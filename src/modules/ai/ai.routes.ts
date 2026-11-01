@@ -16,6 +16,8 @@ export async function aiRoutes(app: FastifyInstance) {
         provider: env.AI_PROVIDER,
         model: env.AI_MODEL,
         configured: Boolean(env.AI_API_KEY),
+        fallbackEnabled: env.AI_FALLBACK_PROVIDER !== "none" && Boolean(env.AI_FALLBACK_API_KEY && env.AI_FALLBACK_MODEL),
+        fallbackProvider: env.AI_FALLBACK_PROVIDER === "none" ? null : env.AI_FALLBACK_PROVIDER,
         note: "AI calls execute only when enabled and configured; worker processes must also receive the same environment.",
     }));
 

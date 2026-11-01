@@ -4,6 +4,8 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { z } from "zod";
+import { contractExtractionSchema } from "./contract-extraction.schema.js";
+export { contractExtractionSchema } from "./contract-extraction.schema.js";
 import { env } from "../../config/env.js";
 import { ExternalServiceError, ValidationError } from "../../lib/errors.js";
 import { db } from "../../db/client.js";
@@ -12,6 +14,7 @@ import { documents } from "../../db/schema/core.js";
 import { and, eq } from "drizzle-orm";
 import { downloadStoredObject } from "../documents/document.service.js";
 import { withRedisLock } from "../../lib/distributed-lock.js";
+import { redis } from "../../lib/redis.js";
 
 async function pdfToText(buffer: Buffer) {
     const dir = await mkdtemp(join(tmpdir(), "settle-pdf-"));
@@ -55,37 +58,6 @@ async function pdfToText(buffer: Buffer) {
     }
 }
 
-export const contractExtractionSchema = z.object({
-    document_type: z.string(),
-    title: z.string().nullable(),
-    parties: z.array(z.object({ name: z.string(), role: z.string() })),
-    currency: z.string().nullable(),
-    total_amount: z.string().nullable(),
-    effective_date: z.string().nullable(),
-    governing_law: z.string().nullable(),
-    payment_terms: z.object({
-        due_days: z.number().int().nonnegative().nullable(),
-        notes: z.string().nullable(),
-    }),
-    milestones: z.array(
-        z.object({
-            name: z.string(),
-            amount: z.string().nullable(),
-            due_date: z.string().nullable(),
-            deliverables: z.array(z.string()),
-        }),
-    ),
-    claims: z.array(
-        z.object({
-            field: z.string(),
-            value: z.unknown(),
-            confidence: z.number().min(0).max(1),
-            source_excerpt: z.string().max(1200),
-        }),
-    ),
-    summary: z.string().max(5000),
-});
-
 const defenseSchema = z.object({
     strength_score: z.number().min(0).max(100),
     summary: z.string().max(4000),
@@ -116,29 +88,128 @@ function parseJson(text: string): unknown {
     }
 }
 
-async function requestProvider(prompt: string) {
-    if (!env.AI_ENABLED)
+type AiProvider = "gemini" | "openai" | "groq";
+
+type ProviderConfig = {
+    provider: AiProvider;
+    apiKey: string;
+    model: string;
+    baseUrl?: string;
+};
+
+type ProviderResult = {
+    parsed: unknown;
+    latencyMs: number;
+    tokensIn?: number;
+    tokensOut?: number;
+    provider: AiProvider;
+    model: string;
+};
+
+const rateLimitScript = `
+local count = redis.call("INCR", KEYS[1])
+if count == 1 then redis.call("PEXPIRE", KEYS[1], ARGV[1]) end
+local ttl = redis.call("PTTL", KEYS[1])
+if count > tonumber(ARGV[2]) then return {0, math.max(ttl, 1)} end
+return {1, 0}
+`;
+
+function primaryProviderConfig(): ProviderConfig {
+    return {
+        provider: env.AI_PROVIDER,
+        apiKey: env.AI_API_KEY ?? "",
+        model: env.AI_MODEL,
+        baseUrl: env.AI_BASE_URL,
+    };
+}
+
+function fallbackProviderConfig(): ProviderConfig | undefined {
+    if (env.AI_FALLBACK_PROVIDER === "none" || !env.AI_FALLBACK_API_KEY || !env.AI_FALLBACK_MODEL.trim()) return undefined;
+    return {
+        provider: env.AI_FALLBACK_PROVIDER,
+        apiKey: env.AI_FALLBACK_API_KEY,
+        model: env.AI_FALLBACK_MODEL,
+        baseUrl: env.AI_FALLBACK_BASE_URL,
+    };
+}
+
+function isRetryableProviderError(error: unknown): boolean {
+    if (!(error instanceof ExternalServiceError)) return false;
+    const details = error.details as { retryable?: boolean } | undefined;
+    return details?.retryable === true;
+}
+
+function isFallbackEligibleProviderError(error: unknown): boolean {
+    if (!(error instanceof ExternalServiceError)) return false;
+    const details = error.details as { retryable?: boolean; providerStatus?: number } | undefined;
+    // A 404 is not retried against the same provider, but a configured second
+    // provider can still serve the request when the primary model/endpoint is
+    // unavailable or misconfigured. Authentication and malformed-request errors
+    // remain fail-fast to avoid masking credential or payload problems.
+    return details?.retryable === true || details?.providerStatus === 404;
+}
+
+async function reserveProviderCapacity(provider: AiProvider) {
+    const key = `settle:ai:rate:${provider}:${Math.floor(Date.now() / env.AI_RATE_LIMIT_WINDOW_MS)}`;
+    const result = await redis.eval(
+        rateLimitScript,
+        1,
+        key,
+        String(env.AI_RATE_LIMIT_WINDOW_MS * 2),
+        String(env.AI_RATE_LIMIT_MAX),
+    ) as [number, number];
+    if (Number(result[0]) !== 1) {
+        const retryAfterMs = Math.max(Number(result[1]) || env.AI_RATE_LIMIT_WINDOW_MS, 1000);
         throw new ExternalServiceError(
-            "AI_DISABLED",
-            "AI processing is disabled.",
-            503,
+            "AI_RATE_LIMITED",
+            `Local AI rate limit reached for ${provider}; retry after ${Math.ceil(retryAfterMs / 1000)} seconds.`,
+            429,
+            { provider, retryable: true, retryAfterMs },
         );
-    if (!env.AI_API_KEY)
+    }
+}
+
+function retryAfterMs(response: Response, body: Record<string, any>): number | undefined {
+    const header = response.headers.get("retry-after");
+    if (header) {
+        const seconds = Number(header);
+        const delay = Number.isFinite(seconds) && seconds > 0
+            ? seconds * 1000
+            : Date.parse(header) - Date.now();
+        if (Number.isFinite(delay) && delay > 0) return Math.ceil(delay);
+    }
+    const details = body.error?.details;
+    if (Array.isArray(details)) {
+        const retry = details.find((item: any) => typeof item?.retryDelay === "string")?.retryDelay;
+        const match = typeof retry === "string" ? retry.match(/^(\d+(?:\.\d+)?)s$/) : null;
+        if (match) return Math.ceil(Number(match[1]) * 1000);
+    }
+    return undefined;
+}
+
+async function requestSingleProvider(prompt: string, config: ProviderConfig): Promise<ProviderResult> {
+    if (!config.apiKey) {
         throw new ExternalServiceError(
             "AI_NOT_CONFIGURED",
-            "AI_API_KEY is not configured.",
+            `API key for ${config.provider} is not configured.`,
             503,
+            { provider: config.provider, retryable: false },
         );
+    }
+
+    await reserveProviderCapacity(config.provider);
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), env.AI_TIMEOUT_MS);
     const started = Date.now();
+
     try {
-        if (env.AI_PROVIDER === "gemini") {
-            const base =
-                env.AI_BASE_URL ??
-                "https://generativelanguage.googleapis.com/v1beta";
-            const response = await fetch(
-                `${base}/models/${encodeURIComponent(env.AI_MODEL)}:generateContent?key=${encodeURIComponent(env.AI_API_KEY)}`,
+        let response: Response;
+        let body: Record<string, any>;
+
+        if (config.provider === "gemini") {
+            const base = config.baseUrl ?? "https://generativelanguage.googleapis.com/v1beta";
+            response = await fetch(
+                `${base.replace(/\/$/, "")}/models/${encodeURIComponent(config.model)}:generateContent?key=${encodeURIComponent(config.apiKey)}`,
                 {
                     method: "POST",
                     signal: controller.signal,
@@ -153,83 +224,125 @@ async function requestProvider(prompt: string) {
                     }),
                 },
             );
-            const body = (await response.json()) as Record<string, any>;
-            if (!response.ok)
+            body = await response.json().catch(() => ({})) as Record<string, any>;
+            if (!response.ok) {
+                const retryable = response.status === 429 || response.status >= 500;
+                const retryDelay = retryAfterMs(response, body);
                 throw new ExternalServiceError(
                     "AI_PROVIDER_ERROR",
                     `AI provider request failed (${response.status}).`,
                     502,
+                    { provider: config.provider, providerStatus: response.status, retryable, retryAfterMs: retryDelay },
                 );
-            const text =
-                body.candidates?.[0]?.content?.parts
-                    ?.map((p: any) => p.text ?? "")
-                    .join("") ?? "";
+            }
+            const text = body.candidates?.[0]?.content?.parts?.map((part: any) => part.text ?? "").join("") ?? "";
             return {
                 parsed: parseJson(text),
                 latencyMs: Date.now() - started,
                 tokensIn: body.usageMetadata?.promptTokenCount,
                 tokensOut: body.usageMetadata?.candidatesTokenCount,
+                provider: config.provider,
+                model: config.model,
             };
         }
-        const base = env.AI_BASE_URL ?? "https://api.openai.com/v1";
-        const response = await fetch(
-            `${base.replace(/\/$/, "")}/chat/completions`,
-            {
-                method: "POST",
-                signal: controller.signal,
-                headers: {
-                    authorization: `Bearer ${env.AI_API_KEY}`,
-                    "content-type": "application/json",
-                },
-                body: JSON.stringify({
-                    model: env.AI_MODEL,
-                    temperature: 0.1,
-                    max_tokens: env.AI_MAX_OUTPUT_TOKENS,
-                    response_format: { type: "json_object" },
-                    messages: [
-                        {
-                            role: "system",
-                            content:
-                                "Return only valid JSON. Never invent facts. Use null when unknown.",
-                        },
-                        { role: "user", content: prompt },
-                    ],
-                }),
+
+        const base = config.baseUrl ?? (config.provider === "groq" ? "https://api.groq.com/openai/v1" : "https://api.openai.com/v1");
+        response = await fetch(`${base.replace(/\/$/, "")}/chat/completions`, {
+            method: "POST",
+            signal: controller.signal,
+            headers: {
+                authorization: `Bearer ${config.apiKey}`,
+                "content-type": "application/json",
             },
-        );
-        const body = (await response.json()) as Record<string, any>;
-        if (!response.ok)
+            body: JSON.stringify({
+                model: config.model,
+                temperature: 0.1,
+                max_tokens: env.AI_MAX_OUTPUT_TOKENS,
+                response_format: { type: "json_object" },
+                messages: [
+                    { role: "system", content: "Return only valid JSON. Never invent facts. Use null when unknown." },
+                    { role: "user", content: prompt },
+                ],
+            }),
+        });
+        body = await response.json().catch(() => ({})) as Record<string, any>;
+        if (!response.ok) {
+            const retryable = response.status === 429 || response.status >= 500;
+            const retryDelay = retryAfterMs(response, body);
             throw new ExternalServiceError(
                 "AI_PROVIDER_ERROR",
                 `AI provider request failed (${response.status}).`,
                 502,
+                { provider: config.provider, providerStatus: response.status, retryable, retryAfterMs: retryDelay },
             );
+        }
         const text = body.choices?.[0]?.message?.content ?? "";
         return {
             parsed: parseJson(text),
             latencyMs: Date.now() - started,
             tokensIn: body.usage?.prompt_tokens,
             tokensOut: body.usage?.completion_tokens,
+            provider: config.provider,
+            model: config.model,
         };
     } catch (error) {
-        if (
-            error instanceof ExternalServiceError ||
-            error instanceof ValidationError
-        )
-            throw error;
-        if (error instanceof Error && error.name === "AbortError")
+        if (error instanceof ExternalServiceError || error instanceof ValidationError) throw error;
+        if (error instanceof Error && error.name === "AbortError") {
             throw new ExternalServiceError(
                 "AI_TIMEOUT",
                 "AI provider request timed out.",
                 504,
+                { provider: config.provider, retryable: true },
             );
+        }
         throw new ExternalServiceError(
             "AI_PROVIDER_UNAVAILABLE",
-            error instanceof Error ? error.message : "AI provider unavailable.",
+            "AI provider is temporarily unavailable.",
             502,
+            { provider: config.provider, retryable: true },
         );
     } finally {
         clearTimeout(timeout);
+    }
+}
+
+async function requestProvider(prompt: string): Promise<ProviderResult> {
+    if (!env.AI_ENABLED) {
+        throw new ExternalServiceError("AI_DISABLED", "AI processing is disabled.", 503);
+    }
+
+    const primary = primaryProviderConfig();
+    try {
+        return await requestSingleProvider(prompt, primary);
+    } catch (primaryError) {
+        const fallback = fallbackProviderConfig();
+        if (!fallback || fallback.provider === primary.provider || !isFallbackEligibleProviderError(primaryError)) {
+            throw primaryError;
+        }
+
+        // Fallback handles rate limits, timeouts, provider availability/server
+        // failures, and primary model/endpoint 404s. It does not retry malformed
+        // requests or authentication failures.
+        try {
+            return await requestSingleProvider(prompt, fallback);
+        } catch (fallbackError) {
+            if (fallbackError instanceof ExternalServiceError) {
+                throw new ExternalServiceError(
+                    "AI_ALL_PROVIDERS_FAILED",
+                    `Primary provider ${primary.provider} and fallback provider ${fallback.provider} are unavailable.`,
+                    503,
+                    {
+                        primaryProvider: primary.provider,
+                        fallbackProvider: fallback.provider,
+                        primaryError: primaryError instanceof Error ? primaryError.message : "Primary provider failed",
+                        fallbackError: fallbackError.message,
+                        retryable: isRetryableProviderError(fallbackError),
+                        retryAfterMs: (fallbackError.details as { retryAfterMs?: number } | undefined)?.retryAfterMs,
+                    },
+                );
+            }
+            throw fallbackError;
+        }
     }
 }
 
@@ -273,8 +386,6 @@ export async function extractContractFacts(documentId: string) {
                 where: and(
                     eq(aiRuns.workspaceId, document.workspaceId),
                     eq(aiRuns.task, "document.contract_extraction"),
-                    eq(aiRuns.provider, env.AI_PROVIDER),
-                    eq(aiRuns.model, env.AI_MODEL),
                     eq(aiRuns.promptVersion, promptVersion),
                     eq(aiRuns.inputHash, inputHash),
                     eq(aiRuns.status, "SUCCEEDED"),
@@ -339,8 +450,8 @@ export async function extractContractFacts(documentId: string) {
                         .values({
                             workspaceId: document.workspaceId,
                             task: "document.contract_extraction",
-                            provider: env.AI_PROVIDER,
-                            model: env.AI_MODEL,
+                            provider: result.provider,
+                            model: result.model,
                             promptVersion,
                             inputHash,
                             status: "SUCCEEDED",
@@ -418,8 +529,6 @@ export async function generateDisputeDefense(input: {
         where: and(
           eq(aiRuns.workspaceId, input.workspaceId),
           eq(aiRuns.task, "dispute.defense_draft"),
-          eq(aiRuns.provider, env.AI_PROVIDER),
-          eq(aiRuns.model, env.AI_MODEL),
           eq(aiRuns.promptVersion, "dispute-defense-v1"),
           eq(aiRuns.inputHash, inputHash),
           eq(aiRuns.status, "SUCCEEDED"),
@@ -443,8 +552,8 @@ export async function generateDisputeDefense(input: {
         .values({
           workspaceId: input.workspaceId,
           task: "dispute.defense_draft",
-          provider: env.AI_PROVIDER,
-          model: env.AI_MODEL,
+          provider: result.provider,
+          model: result.model,
           promptVersion: "dispute-defense-v1",
           inputHash,
           status: "SUCCEEDED",
@@ -500,8 +609,6 @@ export async function generateDisputeCopilot(input: {
                 where: and(
                     eq(aiRuns.workspaceId, input.workspaceId),
                     eq(aiRuns.task, "dispute.copilot"),
-                    eq(aiRuns.provider, env.AI_PROVIDER),
-                    eq(aiRuns.model, env.AI_MODEL),
                     eq(aiRuns.promptVersion, "dispute-copilot-v1"),
                     eq(aiRuns.inputHash, inputHash),
                     eq(aiRuns.status, "SUCCEEDED"),
@@ -515,8 +622,8 @@ export async function generateDisputeCopilot(input: {
             const [run] = await db.insert(aiRuns).values({
                 workspaceId: input.workspaceId,
                 task: "dispute.copilot",
-                provider: env.AI_PROVIDER,
-                model: env.AI_MODEL,
+                provider: result.provider,
+                model: result.model,
                 promptVersion: "dispute-copilot-v1",
                 inputHash,
                 status: "SUCCEEDED",

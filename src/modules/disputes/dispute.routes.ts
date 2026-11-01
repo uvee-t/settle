@@ -19,7 +19,12 @@ export async function disputeRoutes(app: FastifyInstance) {
         { preHandler: requireWorkspace },
         async (request) => {
             const { transactionId } = z
-                .object({ transactionId: z.string().min(1) })
+                .object({
+                    transactionId: z.string().regex(
+                        /^[A-Za-z0-9]{17}$/,
+                        "Enter the 17-character PayPal seller transaction ID, not an order, invoice, or dispute ID.",
+                    ),
+                })
                 .parse(request.params);
 
             const adapter = workspacePayPalDisputes(await getWorkspacePayPalClient(request.auth!.workspaceId!));

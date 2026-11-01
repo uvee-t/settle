@@ -1365,6 +1365,18 @@ const aiWorker = new Worker(
     {
         connection: redis,
         concurrency: 2,
+        settings: {
+            backoffStrategy: (attemptsMade, type, error) => {
+                if (type !== "ai-provider") return -1;
+                const details = error instanceof AppError
+                    ? error.details as { retryAfterMs?: number } | undefined
+                    : undefined;
+                if (details?.retryAfterMs && Number.isFinite(details.retryAfterMs)) {
+                    return Math.min(15 * 60_000, Math.max(1_000, details.retryAfterMs));
+                }
+                return Math.min(5 * 60_000, 30_000 * (2 ** Math.max(0, attemptsMade - 1)));
+            },
+        },
     },
 );
 

@@ -125,7 +125,18 @@ const schema = z.object({
     z.boolean(),
   ),
 
-  AI_PROVIDER: z.enum(["gemini", "openai"]).default("gemini"),
+  AI_PROVIDER: z.enum(["gemini", "openai", "groq"]).default("gemini"),
+
+  AI_FALLBACK_PROVIDER: z.enum(["none", "groq", "openai"]).default("none"),
+  AI_FALLBACK_API_KEY: z.string().optional(),
+  AI_FALLBACK_MODEL: z.string().default(""),
+  AI_FALLBACK_BASE_URL: z.preprocess(
+    (value) => typeof value === "string" && value.trim() === "" ? undefined : value,
+    z.url().optional(),
+  ),
+
+  AI_RATE_LIMIT_MAX: z.coerce.number().int().positive().default(4),
+  AI_RATE_LIMIT_WINDOW_MS: z.coerce.number().int().positive().default(60_000),
 
   AI_API_KEY: z.string().optional(),
 
