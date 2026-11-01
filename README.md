@@ -237,3 +237,15 @@ See [Backblaze B2 migration and deployment instructions](BACKBLAZE_B2_MIGRATION.
 - Contract amounts: extraction accepts monetary values as JSON strings or finite JSON numbers and normalizes them to strings before persistence. Other schema fields remain validated.
 - Redis `EAI_AGAIN`: this indicates DNS resolution failed for the hostname in `REDIS_URL`. The Redis client now reconnects with capped exponential backoff and jitter, but a stale/incorrect hostname or persistent DNS outage must still be fixed in Redis Cloud / the runtime DNS configuration. Verify with `getent hosts <redis-host>` and `redis-cli -u "$REDIS_URL" PING`.
 - PayPal transaction lookup: `/v1/disputes/by-transaction/:transactionId` requires the 17-character alphanumeric seller transaction ID returned in `disputed_transactions[].seller_transaction_id`. Do not pass an order ID, invoice ID, dispute ID, or local payment ID.
+
+## Document AI and image OCR
+
+The worker extracts text from PDF, TXT, CSV, JSON, PNG, JPEG, and GIF documents. Image OCR is performed locally by Tesseract (English language data) before the text is sent to the configured AI provider. The Docker image installs `tesseract-ocr` and `tesseract-ocr-data-eng`; custom worker hosts must install Tesseract and its English trained data separately.
+
+If an image contains no readable text, extraction is marked as skipped for that document version. The original image remains available as a supporting evidence attachment and must be reviewed by a person. OCR output is not proof that a claim is true.
+
+## PayPal evidence matching
+
+Evidence items are matched to the exact `evidence_type` PayPal requested from the seller. Settle does not automatically convert a contract, invoice, or fulfillment record into `OTHER`, because that can misrepresent the evidence category. The dispute page displays seller-requested types and match counts. If PayPal requests `OTHER`, attach the relevant verified document with evidence type `OTHER`, review it, approve the pack, and then submit. See [PayPal's evidence definitions](https://developer.paypal.com/api/customer-disputes/v1/definitions/evidence) and [provide-evidence guide](https://developer.paypal.com/platforms/disputes/handle-disputes/use-disputes-api/).
+
+The AI worker skips dispute analysis when there are no evidence candidates and records terminal document-validation skips so recovery does not retry the same unsupported/invalid file indefinitely. Transient provider and infrastructure failures continue through the configured BullMQ retry/backoff policy.

@@ -38,3 +38,14 @@
 - Kept legacy AWS S3 environment variables as a fallback for a controlled transition.
 - Removed the AWS-specific SSE header from browser upload signing; encryption is managed by the configured private B2 bucket.
 - Added `BACKBLAZE_B2_MIGRATION.md` and `.env.backblaze.example`.
+
+## Evidence and worker reliability update
+
+- Added exact PayPal evidence-type matching and preflight validation before any external submission.
+- Exposed seller-requested PayPal evidence requirements and matched/missing status in the dispute UI.
+- Added `OTHER`, refund, receipt, contract, and description evidence types to the attachment selector.
+- Preserved manually attached evidence documents when background evidence packs regenerate.
+- Added PNG/JPEG/GIF OCR using Tesseract in the worker image.
+- Marked permanent document validation failures as terminal skips so scheduled recovery does not retry the same bad file indefinitely.
+- Skipped AI dispute analysis when no matching evidence candidates exist.
+- Added unit tests for strict evidence-type matching.

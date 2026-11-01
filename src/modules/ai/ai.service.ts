@@ -16,6 +16,49 @@ import { downloadStoredObject } from "../documents/document.service.js";
 import { withRedisLock } from "../../lib/distributed-lock.js";
 import { redis } from "../../lib/redis.js";
 
+async function runTesseract(buffer: Buffer, extension: string) {
+    const dir = await mkdtemp(join(tmpdir(), "settle-ocr-"));
+    const input = join(dir, `input.${extension}`);
+    try {
+        await writeFile(input, buffer, { mode: 0o600 });
+        return await new Promise<string>((resolve, reject) => {
+            const child = spawn("tesseract", [input, "stdout", "-l", "eng"], {
+                stdio: ["ignore", "pipe", "pipe"],
+            });
+            let output = "";
+            let stderr = "";
+            child.stdout.setEncoding("utf8");
+            child.stdout.on("data", (chunk: string) => {
+                output += chunk;
+                if (output.length > env.AI_MAX_INPUT_CHARS * 2) child.kill("SIGKILL");
+            });
+            child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+            child.on("error", (error: NodeJS.ErrnoException) => reject(
+                new ExternalServiceError(
+                    "OCR_UNAVAILABLE",
+                    error.code === "ENOENT" ? "Image OCR is unavailable on this worker. Install Tesseract OCR and English language data." : "Image OCR could not start.",
+                    422,
+                    { retryable: false },
+                ),
+            ));
+            child.on("close", (code) => {
+                if (code !== 0) {
+                    reject(new ValidationError(`Image OCR failed: ${stderr.slice(0, 300) || `tesseract exited with ${code}`}`));
+                    return;
+                }
+                const text = output.slice(0, env.AI_MAX_INPUT_CHARS).trim();
+                if (!text) {
+                    reject(new ValidationError("No readable text was detected in this image. You can still attach it as evidence, but AI extraction cannot analyze it."));
+                    return;
+                }
+                resolve(text);
+            });
+        });
+    } finally {
+        await rm(dir, { recursive: true, force: true }).catch(() => undefined);
+    }
+}
+
 async function pdfToText(buffer: Buffer) {
     const dir = await mkdtemp(join(tmpdir(), "settle-pdf-"));
     const input = join(dir, "input.pdf");
@@ -361,6 +404,12 @@ export async function extractDocumentText(
         )
     )
         return buffer.toString("utf8").slice(0, env.AI_MAX_INPUT_CHARS);
+    if (document.contentType === "image/png")
+        return runTesseract(buffer, "png");
+    if (document.contentType === "image/jpeg")
+        return runTesseract(buffer, "jpg");
+    if (document.contentType === "image/gif")
+        return runTesseract(buffer, "gif");
     throw new ValidationError(
         `AI text extraction is not supported for ${document.contentType}.`,
     );

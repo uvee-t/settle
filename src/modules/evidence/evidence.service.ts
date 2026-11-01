@@ -5,6 +5,7 @@ import { disputeEvidenceRequests } from "../../db/schema/evidence.js";
 import { evidencePackItems, evidencePacks } from "../../db/schema/ai.js";
 import { NotFoundError } from "../../lib/errors.js";
 import { generateEvidencePack } from "./evidence-intelligence.service.js";
+import { getEvidenceRequirementStatus } from "./evidence-matching.js";
 
 export async function buildEvidencePack(
     disputeId: string,
@@ -35,13 +36,15 @@ export async function buildEvidencePack(
         const items = await db.query.evidencePackItems.findMany({
             where: eq(evidencePackItems.evidencePackId, existingPack.id),
         });
+        const sellerRequirements = requirements.filter((r) => !r.source || r.source === "REQUESTED_FROM_SELLER");
+        const coverage = getEvidenceRequirementStatus(sellerRequirements, items);
         return {
             generated_at: new Date().toISOString(),
             dispute,
             requirements,
             evidence_pack: existingPack,
             items,
-            missing_evidence: [],
+            missing_evidence: coverage.filter((r) => r.required && !r.matched).map((r) => r.evidenceType),
         };
     }
     const generated = await generateEvidencePack(disputeId, workspaceId);

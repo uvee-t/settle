@@ -6,6 +6,7 @@ import { disputes } from "../../db/schema/disputes.js";
 import { documents } from "../../db/schema/core.js";
 import { requireRole, requireWorkspace } from "../auth/auth.plugin.js";
 import { buildEvidencePack } from "./evidence.service.js";
+import { evidenceMatchesRequirement, getEvidenceRequirementStatus } from "./evidence-matching.js";
 import { evidencePackItems, evidencePacks } from "../../db/schema/ai.js";
 import { disputeEvidenceRequests } from "../../db/schema/evidence.js";
 import { submitEvidence } from "../disputes/dispute.service.js";
@@ -46,8 +47,7 @@ export async function evidenceRoutes(app: FastifyInstance) {
                     document_id: z.uuid(),
                     evidence_type: z
                         .string()
-                        .min(1)
-                        .max(100)
+                        .regex(/^[A-Za-z0-9_]{1,100}$/)
                         .default("PROOF_OF_FULFILLMENT"),
                     claim: z.string().min(5).max(5000).optional(),
                 })
@@ -105,7 +105,8 @@ export async function evidenceRoutes(app: FastifyInstance) {
             const duplicate = existing.find(
                 (item) =>
                     item.sourceType === "document" &&
-                    item.sourceId === document.id,
+                    item.sourceId === document.id &&
+                    item.evidenceType === body.evidence_type,
             );
             if (duplicate)
                 return reply
@@ -129,6 +130,7 @@ export async function evidenceRoutes(app: FastifyInstance) {
                         sizeBytes: document.sizeBytes,
                         sha256: document.sha256,
                         objectKey: document.objectKey,
+                        manual_attachment: true,
                     },
                 })
                 .returning();
@@ -267,23 +269,39 @@ export async function evidenceRoutes(app: FastifyInstance) {
                     eq(evidencePackItems.selected, "true"),
                 ),
             });
-            const requirements =
+            const allRequirements =
                 await db.query.disputeEvidenceRequests.findMany({
                     where: eq(disputeEvidenceRequests.disputeId, disputeId),
                 });
+            // PayPal's response can include evidence submitted by the buyer as
+            // well as evidence requested from the seller. Only seller-requested
+            // evidence should drive this submission. Keep empty-source legacy
+            // records for older synced disputes.
+            const requirements = allRequirements.filter((r) =>
+                !r.source || r.source === "REQUESTED_FROM_SELLER",
+            );
             const submissions: unknown[] = [];
+            const requirementStatus = getEvidenceRequirementStatus(requirements, items);
+            const missingRequired = requirementStatus.filter((r) => r.required && !r.matched);
+            if (!requirements.length) {
+                throw new ValidationError(
+                    "PayPal has not provided any seller evidence requirements for this dispute. Refresh the dispute details before submitting evidence.",
+                );
+            }
+            if (missingRequired.length) {
+                throw new ValidationError(
+                    "Some required PayPal evidence types are still missing. No evidence was submitted. Add matching evidence before trying again.",
+                    { missingRequirements: missingRequired.map((r) => r.evidenceType) },
+                );
+            }
 
             for (const requirement of requirements) {
                 const type = requirement.providerEvidenceType;
 
-                const matchingItems = items.filter(
-                    (i) =>
-                        i.evidenceType === type ||
-                        (type === "PROOF_OF_DELIVERY" &&
-                            i.evidenceType === "PROOF_OF_FULFILLMENT") ||
-                        (type === "COMMUNICATION" &&
-                            i.evidenceType === "COMMUNICATION") ||
-                        (type === "OTHER" && i.evidenceType === "OTHER"),
+                // Only submit evidence under the exact evidence_type requested by
+                // PayPal. Similar-sounding categories are not interchangeable.
+                const matchingItems = items.filter((i) =>
+                    evidenceMatchesRequirement(i.evidenceType, type),
                 );
                 if (!matchingItems.length) continue;
                 const attachedDocuments: Array<{
@@ -331,10 +349,16 @@ export async function evidenceRoutes(app: FastifyInstance) {
 
                 submissions.push(result);
             }
-            if (!submissions.length)
+            if (!submissions.length) {
                 throw new ValidationError(
-                    "No selected evidence matches a PayPal evidence requirement.",
+                    "No selected evidence matches a PayPal evidence requirement. Select or attach evidence using one of the exact evidence types requested by PayPal.",
+                    {
+                        requiredEvidenceTypes: requirementStatus.filter((r) => r.required).map((r) => r.evidenceType),
+                        selectedEvidenceTypes: [...new Set(items.map((item) => item.evidenceType))],
+                        missingRequirements: missingRequired.map((r) => r.evidenceType),
+                    },
                 );
+            }
             const [updated] = await db
                 .update(evidencePacks)
                 .set({

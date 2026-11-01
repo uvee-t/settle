@@ -24,22 +24,15 @@ import { disputeEvidenceRequests } from "../../db/schema/evidence.js";
 import { generateDisputeDefense } from "../ai/ai.service.js";
 import { NotFoundError, ValidationError } from "../../lib/errors.js";
 import { writeAudit } from "../../lib/audit.js";
+import { evidenceMatchesRequirement } from "./evidence-matching.js";
 
 const DEFAULT_REQUIREMENTS: Record<string, string[]> = {
-    MERCHANDISE_OR_SERVICE_NOT_RECEIVED: [
-        "PROOF_OF_FULFILLMENT",
-        "PROOF_OF_DELIVERY",
-        "COMMUNICATION",
-    ],
-    MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED: [
-        "PROOF_OF_FULFILLMENT",
-        "COMMUNICATION",
-        "CONTRACT",
-    ],
-    DUPLICATE_TRANSACTION: ["TRANSACTION_RECEIPT", "COMMUNICATION"],
-    CREDIT_NOT_PROCESSED: ["REFUND_DOCUMENTATION", "COMMUNICATION"],
-    CANCELED_RECURRING_BILLING: ["CONTRACT", "COMMUNICATION"],
-    UNKNOWN: ["CONTRACT", "INVOICE", "PAYMENT", "COMMUNICATION"],
+    MERCHANDISE_OR_SERVICE_NOT_RECEIVED: ["PROOF_OF_FULFILLMENT"],
+    MERCHANDISE_OR_SERVICE_NOT_AS_DESCRIBED: ["OTHER"],
+    DUPLICATE_TRANSACTION: ["PROOF_OF_RECEIPT_COPY"],
+    CREDIT_NOT_PROCESSED: ["PROOF_OF_REFUND"],
+    CANCELED_RECURRING_BILLING: ["BILLING_AGREEMENT"],
+    UNKNOWN: ["OTHER"],
 };
 
 function evidenceTypeForSource(sourceType: string) {
@@ -242,7 +235,7 @@ export async function generateEvidencePack(
     }> = [];
     for (const invoice of collected.invoices)
         candidates.push({
-            evidenceType: "INVOICE",
+            evidenceType: "PROOF_OF_RECEIPT_COPY",
             sourceType: "invoice",
             sourceId: invoice.id,
             claim: `Invoice ${invoice.invoiceNumber ?? invoice.id} records ${invoice.amount} ${invoice.currency}.`,
@@ -250,7 +243,7 @@ export async function generateEvidencePack(
         });
     if (collected.payment)
         candidates.push({
-            evidenceType: "TRANSACTION_RECEIPT",
+            evidenceType: "PROOF_OF_RECEIPT_COPY",
             sourceType: "payment",
             sourceId: collected.payment.id,
             claim: `Payment records ${collected.payment.amount} ${collected.payment.currency} with provider transaction ${collected.payment.providerPaymentId ?? "unknown"}.`,
@@ -258,7 +251,7 @@ export async function generateEvidencePack(
         });
     for (const contract of collected.contracts)
         candidates.push({
-            evidenceType: "CONTRACT",
+            evidenceType: "COPY_OF_CONTRACT",
             sourceType: "contract",
             sourceId: contract.id,
             claim: `Contract ${contract.title} establishes the commercial relationship and agreed scope.`,
@@ -361,26 +354,24 @@ export async function generateEvidencePack(
             },
         })
         .returning();
+    const previousItems = await db.query.evidencePackItems.findMany({
+        where: eq(evidencePackItems.evidencePackId, pack.id),
+    });
+    // Preserve user-attached records across background regeneration. Without
+    // this, dispute.analyze could erase documents the user had just attached.
+    const manualItems = previousItems.filter((item) =>
+        Boolean((item.metadata as { manual_attachment?: boolean } | null)?.manual_attachment),
+    );
     await db
         .delete(evidencePackItems)
         .where(eq(evidencePackItems.evidencePackId, pack.id));
     const selected = candidates
-        .filter((c) =>
-            required.some(
-                (r) =>
-                    c.evidenceType === r ||
-                    (r === "PROOF_OF_DELIVERY" &&
-                        ["PROOF_OF_FULFILLMENT", "DOCUMENT"].includes(
-                            c.evidenceType,
-                        )) ||
-                    (r === "COMMUNICATION" &&
-                        c.evidenceType === "COMMUNICATION"),
-            ),
-        )
+        .filter((c) => required.some((r) => evidenceMatchesRequirement(c.evidenceType, r)))
         .slice(0, 50);
-    if (selected.length)
+    if (selected.length || manualItems.length)
         await db.insert(evidencePackItems).values(
-            selected.map((c) => ({
+            [
+                ...selected.map((c) => ({
                 evidencePackId: pack.id,
                 evidenceType: c.evidenceType,
                 sourceType: c.sourceType,
@@ -390,22 +381,34 @@ export async function generateEvidencePack(
                 selected: "true",
                 metadata: c.metadata,
             })),
+                ...manualItems.map((item) => ({
+                    evidencePackId: pack.id,
+                    evidenceType: item.evidenceType,
+                    sourceType: item.sourceType,
+                    sourceId: item.sourceId,
+                    claim: item.claim,
+                    confidence: item.confidence,
+                    selected: item.selected,
+                    metadata: item.metadata,
+                })),
+            ],
         );
+    const allAvailable = [
+        ...selected,
+        ...manualItems
+            .filter((item) => item.selected === "true")
+            .map((item) => ({ evidenceType: item.evidenceType, confidence: item.confidence })),
+    ];
     const missing = required.filter(
         (r) =>
-            !selected.some(
-                (c) =>
-                    c.evidenceType === r ||
-                    (r === "PROOF_OF_DELIVERY" &&
-                        ["PROOF_OF_FULFILLMENT", "DOCUMENT"].includes(
-                            c.evidenceType,
-                        )),
+            !allAvailable.some(
+                (c) => evidenceMatchesRequirement(c.evidenceType, r),
             ),
     );
     const strength = Math.round(
         Math.min(
             100,
-            selected.reduce((sum, c) => sum + Number(c.confidence) * 20, 0) +
+            allAvailable.reduce((sum, c) => sum + Number(c.confidence ?? 0) * 20, 0) +
                 (missing.length === 0 ? 20 : 0),
         ),
     );
@@ -426,7 +429,7 @@ export async function generateEvidencePack(
         collected,
         required,
         missing,
-        candidates: selected,
+        candidates: [...selected, ...manualItems.filter((item) => item.selected === "true")],
         strengthScore: strength,
     };
 }
@@ -447,10 +450,16 @@ export async function analyzeEvidencePack(packId: string, workspaceId: string) {
     });
     if (!dispute) throw new NotFoundError("Dispute not found.");
     const items = await db.query.evidencePackItems.findMany({
-        where: eq(evidencePackItems.evidencePackId, pack.id),
+        where: and(
+            eq(evidencePackItems.evidencePackId, pack.id),
+            eq(evidencePackItems.selected, "true"),
+        ),
     });
     if (!items.length)
-        throw new ValidationError("Evidence pack has no evidence items.");
+        throw new ValidationError(
+            "Evidence pack has no evidence items. Attach at least one verified, relevant document or generate evidence from linked invoices, payments, contracts, deliveries, or communications before running AI analysis.",
+            { packId, disputeId: pack.disputeId, retryable: false },
+        );
     const ai = await generateDisputeDefense({
         workspaceId,
         dispute: {

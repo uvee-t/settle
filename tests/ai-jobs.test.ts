@@ -14,13 +14,14 @@ describe("AI extraction recovery helpers", () => {
       .not.toBe(documentExtractionJobId("doc-1", "b".repeat(64)));
   });
 
-  it("only suppresses recovery for successful extraction runs with a document ID", () => {
+  it("suppresses recovery for successful or terminally skipped runs with a document ID", () => {
     const ids = successfulExtractionDocumentIds([
       { status: "SUCCEEDED", result: { document_id: "done-doc" } },
       { status: "FAILED", result: { document_id: "failed-doc" } },
+      { status: "SKIPPED", result: { document_id: "unsupported-image" } },
       { status: "SUCCEEDED", result: { other_id: "no-doc" } },
       { status: "SUCCEEDED", result: null },
     ]);
-    expect([...ids]).toEqual(["done-doc"]);
+    expect([...ids]).toEqual(["done-doc", "unsupported-image"]);
   });
 });

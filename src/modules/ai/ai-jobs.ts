@@ -8,13 +8,13 @@ export type ExtractionRunSummary = {
     result: unknown;
 };
 
-/** Only successful extraction runs suppress recovery scheduling. */
+/** Successful and terminally skipped extraction runs suppress automatic recovery. */
 export function successfulExtractionDocumentIds(
     runs: readonly ExtractionRunSummary[],
 ): Set<string> {
     const ids = new Set<string>();
     for (const run of runs) {
-        if (run.status !== "SUCCEEDED" || !run.result || typeof run.result !== "object") {
+        if (!["SUCCEEDED", "SKIPPED", "FAILED_PERMANENT"].includes(run.status) || !run.result || typeof run.result !== "object") {
             continue;
         }
         const documentId = (run.result as { document_id?: unknown }).document_id;

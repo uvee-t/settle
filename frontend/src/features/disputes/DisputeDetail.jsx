@@ -9,7 +9,7 @@ import { fmtDate, fmtDateTime, money, titleCase } from '../../lib/format.js';
 import { ACCEPT, uploadDocument } from '../../lib/upload.js';
 
 const LOCKED = ['APPROVED', 'SUBMITTED'];
-const TYPES = [['PROOF_OF_FULFILLMENT', 'Proof of fulfillment'], ['PROOF_OF_DELIVERY', 'Proof of delivery'], ['COMMUNICATION', 'Communication'], ['OTHER', 'Other supporting evidence']];
+const TYPES = [['OTHER', 'Other supporting evidence'], ['PROOF_OF_FULFILLMENT', 'Proof of fulfillment'], ['PROOF_OF_REFUND', 'Proof of refund'], ['PROOF_OF_DELIVERY_SIGNATURE', 'Proof of delivery signature'], ['PROOF_OF_RECEIPT_COPY', 'Proof of receipt / invoice'], ['COPY_OF_CONTRACT', 'Copy of contract'], ['ITEM_DESCRIPTION', 'Item description'], ['COMMUNICATION', 'Communication']];
 const isSel = (i) => i.selected === true || i.selected === 'true';
 
 export function DisputeDetail() {
@@ -44,10 +44,16 @@ export function DisputeDetail() {
   useEffect(() => { load(); }, [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const act = async (fn) => { setBusy(true); setError(''); setNotice(''); try { await fn(); } catch (e) { setError(e.message); } finally { setBusy(false); } };
-  const loadPack = () => act(async () => setPack(await api(`/v1/disputes/${id}/evidence-pack`)));
+  const loadPack = () => act(async () => { const next = await api(`/v1/disputes/${id}/evidence-pack`); setPack(next); const nextRequested = (next.requirements || []).find((r) => (!r.source || r.source === 'REQUESTED_FROM_SELLER') && r.status !== 'COMPLETED'); if (nextRequested?.providerEvidenceType) setProofType(nextRequested.providerEvidenceType); });
   const attach = (documentId) => act(async () => {
-    await api(`/v1/disputes/${id}/evidence-pack/documents`, { method: 'POST', body: JSON.stringify({ document_id: documentId, evidence_type: proofType }) });
-    setPack(await api(`/v1/disputes/${id}/evidence-pack`));
+    const currentPack = pack || await api(`/v1/disputes/${id}/evidence-pack`);
+    const requested = (currentPack.requirements || []).find((r) => (!r.source || r.source === 'REQUESTED_FROM_SELLER') && r.status !== 'COMPLETED');
+    const requestedType = requested?.providerEvidenceType;
+    const validRequestedTypes = (currentPack.requirements || []).filter((r) => !r.source || r.source === 'REQUESTED_FROM_SELLER').map((r) => String(r.providerEvidenceType || '').toUpperCase());
+    const typeToAttach = requestedType && !validRequestedTypes.includes(String(proofType).toUpperCase()) ? requestedType : proofType;
+    await api(`/v1/disputes/${id}/evidence-pack/documents`, { method: 'POST', body: JSON.stringify({ document_id: documentId, evidence_type: typeToAttach }) });
+    const next = await api(`/v1/disputes/${id}/evidence-pack`); setPack(next);
+    const nextRequested = (next.requirements || []).find((r) => (!r.source || r.source === 'REQUESTED_FROM_SELLER') && r.status !== 'COMPLETED'); if (nextRequested?.providerEvidenceType) setProofType(nextRequested.providerEvidenceType);
     setNotice('Verified document attached to the evidence pack. Review its claim before approval.');
   });
   const review = (action) => act(async () => {
@@ -86,6 +92,9 @@ export function DisputeDetail() {
   const v = (...keys) => keys.map((k) => record?.[k]).find((x) => x !== undefined && x !== null && x !== '') ?? '—';
   const locked = LOCKED.includes(pack?.evidence_pack?.status);
   const status = pack?.evidence_pack?.status;
+  const requestedRequirements = (pack?.requirements || []).filter((r) => !r.source || r.source === 'REQUESTED_FROM_SELLER');
+  const requirementRows = requestedRequirements.map((r) => { const type = String(r.providerEvidenceType || '').toUpperCase(); const matches = (pack?.items || []).filter((i) => isSel(i) && String(i.evidenceType || i.evidence_type || '').toUpperCase() === type); return { type, required: r.required !== 'false', matches: matches.length }; });
+  const dynamicTypeOptions = [...new Map([...TYPES, ...requestedRequirements.map((r) => [String(r.providerEvidenceType || '').toUpperCase(), titleCase(String(r.providerEvidenceType || '').replaceAll('_', ' '))])].filter((x) => x[0]).map((x) => [x[0], x])).values()];
   const amount = record?.dispute_amount?.value ? money(record.dispute_amount.value, record.dispute_amount.currency_code) : record?.amount ? money(record.amount, record.currency) : '—';
 
   return (
@@ -126,7 +135,7 @@ export function DisputeDetail() {
               <b style={{ fontWeight: 500 }}>Add supporting documents</b>
               <p className="muted" style={{ fontSize: 13 }}>Upload a file to your workspace, then attach it once it is verified. PayPal submission depends on the provider’s supported evidence attachment API.</p>
               <form className="form-grid" onSubmit={uploadProof} style={{ gridTemplateColumns: 'minmax(0,1fr) minmax(0,1.4fr) auto', alignItems: 'end' }}>
-                <SelectField label="Evidence type" value={proofType} onChange={(e) => setProofType(e.target.value)} options={TYPES} />
+                <SelectField label="Evidence type" value={proofType} onChange={(e) => setProofType(e.target.value)} options={dynamicTypeOptions} />
                 <div className="field"><label htmlFor="proof">File</label><input id="proof" type="file" accept={ACCEPT} onChange={(e) => setProof(e.target.files?.[0] || null)} /></div>
                 <Button type="submit" loading={proofBusy} disabled={!proof}>Upload proof</Button>
               </form>
@@ -140,6 +149,7 @@ export function DisputeDetail() {
 
             {!pack ? <EmptyState title="No evidence pack yet">Generate one to collect the relevant records and prepare your response.</EmptyState> : (
               <>
+                {requirementRows.length > 0 && <div className="stack" style={{ marginBottom: 16 }}><h3>PayPal evidence requirements</h3><div className="evidence-summary">{requirementRows.map((r) => <div key={r.type}><span>{titleCase(r.type.replaceAll('_', ' '))}{r.required ? ' · Required' : ' · Optional'}</span><b style={{ color: r.matches ? 'var(--success)' : 'var(--danger)' }}>{r.matches ? `${r.matches} matched` : 'Missing'}</b></div>)}</div><p className="note">Evidence is matched only to the exact type requested by PayPal. For example, proof of fulfillment does not automatically satisfy OTHER.</p></div>}
                 <div className="evidence-summary">
                   <div><span>Evidence items</span><b>{pack.items?.length || 0}</b></div>
                   <div><span>Missing evidence</span><b>{pack.missing_evidence?.length || 0}</b></div>
@@ -158,8 +168,8 @@ export function DisputeDetail() {
                 <p className="note">An evidence pack organizes your records. It does not guarantee any dispute outcome.</p>
                 <div className="actions-row">
                   <Button disabled={busy || locked} onClick={() => review('reject')}>Reject draft</Button>
-                  <Button variant="primary" icon={CheckCircle2} disabled={busy || locked || !pack.items?.length} onClick={() => review('approve')}>Approve selected evidence</Button>
-                  <Button variant="primary" icon={Send} disabled={busy || status !== 'APPROVED'} onClick={() => setConfirmSubmit(true)}>Submit to PayPal</Button>
+                  <Button variant="primary" icon={CheckCircle2} disabled={busy || locked || !pack.items?.some(isSel)} onClick={() => review('approve')}>Approve selected evidence</Button>
+                  <Button variant="primary" icon={Send} disabled={busy || status !== 'APPROVED' || (requirementRows.length > 0 && requirementRows.some((r) => r.required && !r.matches))} onClick={() => setConfirmSubmit(true)}>Submit to PayPal</Button>
                 </div>
               </>
             )}

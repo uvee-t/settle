@@ -1313,7 +1313,31 @@ const aiWorker = new Worker(
                 return;
             }
 
-            await extractContractFacts(documentId);
+            try {
+                await extractContractFacts(documentId);
+            } catch (error) {
+                // Validation/unsupported-content errors are permanent for this
+                // job version. Complete with an explicit skipped result instead
+                // of retrying the same bad file every few minutes.
+                if (error instanceof AppError && error.statusCode >= 400 && error.statusCode < 500) {
+                    const document = await db.query.documents.findFirst({ where: eq(documents.id, documentId) });
+                    if (document) {
+                        await db.insert(aiRuns).values({
+                            workspaceId: document.workspaceId,
+                            task: "document.contract_extraction",
+                            provider: "system",
+                            model: "validation-gate",
+                            promptVersion: "document-extraction-v1",
+                            inputHash: document.sha256,
+                            status: "SKIPPED",
+                            result: { document_id: document.id, reason: error.message },
+                        });
+                    }
+                    logger.warn({ documentId, code: error.code, reason: error.message }, "Document AI extraction skipped; manual review required");
+                    return { status: "skipped", reason: error.message };
+                }
+                throw error;
+            }
 
             logger.info(
                 {
@@ -1346,6 +1370,14 @@ const aiWorker = new Worker(
                 disputeId,
                 workspaceId,
             );
+
+            if (!generated.candidates.length) {
+                logger.warn(
+                    { disputeId, packId: generated.packId, missingEvidence: generated.missing },
+                    "Dispute analysis skipped: no evidence candidates match the PayPal requirements",
+                );
+                return { status: "needs_evidence", packId: generated.packId, missingEvidence: generated.missing };
+            }
 
             await analyzeEvidencePack(generated.packId, workspaceId);
 
@@ -1382,16 +1414,12 @@ const aiWorker = new Worker(
 
 aiWorker.on("ready", () => logger.info("AI/evidence worker ready"));
 
-aiWorker.on("failed", (job, error) =>
-    logger.error(
-        {
-            jobId: job?.id,
-            jobName: job?.name,
-            err: error,
-        },
-        "AI job failed",
-    ),
-);
+aiWorker.on("failed", (job, error) => {
+    const finalAttempt = !job || job.attemptsMade >= (job.opts.attempts ?? 1);
+    const fields = { jobId: job?.id, jobName: job?.name, attemptsMade: job?.attemptsMade, attempts: job?.opts.attempts, err: error };
+    if (finalAttempt) logger.error(fields, "AI job permanently failed after retries");
+    else logger.warn(fields, "AI job attempt failed; BullMQ will retry according to backoff policy");
+});
 
 const recoverAiJobs = async () => {
     if (!env.AI_ENABLED) return;
@@ -1403,7 +1431,7 @@ const recoverAiJobs = async () => {
         const runs = await db.query.aiRuns.findMany({
             where: and(
                 eq(aiRuns.task, "document.contract_extraction"),
-                eq(aiRuns.status, "SUCCEEDED"),
+                inArray(aiRuns.status, ["SUCCEEDED", "SKIPPED", "FAILED_PERMANENT"]),
             ),
             orderBy: (run, { asc }) => [asc(run.createdAt), asc(run.id)],
             limit: runPageSize,
