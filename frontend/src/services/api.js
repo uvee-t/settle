@@ -79,11 +79,15 @@ export function refreshSession() {
                 }
 
                 const payload = await response.json();
+
                 saveSession(payload);
 
                 return Boolean(session().token && session().workspaceId);
             })
-            .catch(() => false)
+            .catch(() => {
+                clearSession();
+                return false;
+            })
             .finally(() => {
                 refreshing = null;
             });

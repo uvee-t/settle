@@ -116,8 +116,9 @@ export async function authRoutes(app: FastifyInstance) {
             setRefreshCookie(reply, result.refreshToken);
 
             return reply.send({
+                user: result.user,
+                workspaceIds: result.workspaceIds,
                 accessToken: result.accessToken,
-                // Include any additional session fields your frontend needs.
             });
         },
     );
