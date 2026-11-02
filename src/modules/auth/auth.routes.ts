@@ -1,4 +1,4 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 
 import { env } from "../../config/env.js";
@@ -20,19 +20,25 @@ const loginSchema = z.object({
 const REFRESH_COOKIE = "settle_refresh";
 
 const refreshCookieOptions = {
-    path: "/v1/auth",
     httpOnly: true,
-    secure: env.NODE_ENV === "production",
-    sameSite: "lax" as const,
+    secure: true,
+    sameSite: "none" as const,
+    path: "/v1/auth",
     maxAge: env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60,
 };
 
-const clearRefreshCookieOptions = {
-    path: "/v1/auth",
-    httpOnly: true,
-    secure: env.NODE_ENV === "production",
-    sameSite: "lax" as const,
-};
+function setRefreshCookie(reply: FastifyReply, token: string) {
+    reply.setCookie(REFRESH_COOKIE, token, refreshCookieOptions);
+}
+
+function clearRefreshCookie(reply: FastifyReply) {
+    reply.clearCookie(REFRESH_COOKIE, {
+        httpOnly: true,
+        secure: true,
+        sameSite: "none",
+        path: "/v1/auth",
+    });
+}
 
 export async function authRoutes(app: FastifyInstance) {
     // REGISTER
@@ -53,15 +59,13 @@ export async function authRoutes(app: FastifyInstance) {
                 workspaceName: body.workspace_name,
             });
 
-            reply.setCookie(
-                REFRESH_COOKIE,
-                result.refreshToken,
-                refreshCookieOptions,
-            );
+            setRefreshCookie(reply, result.refreshToken);
 
-            const { refreshToken: _refreshToken, ...response } = result;
-
-            return reply.code(201).send(response);
+            return reply.code(201).send({
+                user: result.user,
+                workspace: result.workspace,
+                accessToken: result.accessToken,
+            });
         },
     );
 
@@ -76,15 +80,13 @@ export async function authRoutes(app: FastifyInstance) {
         async (request, reply) => {
             const result = await login(loginSchema.parse(request.body));
 
-            reply.setCookie(
-                REFRESH_COOKIE,
-                result.refreshToken,
-                refreshCookieOptions,
-            );
+            setRefreshCookie(reply, result.refreshToken);
 
-            const { refreshToken: _refreshToken, ...response } = result;
-
-            return reply.send(response);
+            return reply.send({
+                user: result.user,
+                workspaceIds: result.workspaceIds,
+                accessToken: result.accessToken,
+            });
         },
     );
 
@@ -111,19 +113,16 @@ export async function authRoutes(app: FastifyInstance) {
                 refreshToken: token,
             });
 
-            // Rotate refresh cookie.
-            reply.setCookie(
-                REFRESH_COOKIE,
-                result.refreshToken,
-                refreshCookieOptions,
-            );
+            setRefreshCookie(reply, result.refreshToken);
 
-            const { refreshToken: _refreshToken, ...response } = result;
-
-            return reply.send(response);
+            return reply.send({
+                accessToken: result.accessToken,
+                // Include any additional session fields your frontend needs.
+            });
         },
     );
 
+    // LOGOUT
     app.post(
         "/v1/auth/logout",
         {
@@ -138,7 +137,7 @@ export async function authRoutes(app: FastifyInstance) {
                 await logout(token);
             }
 
-            reply.clearCookie(REFRESH_COOKIE, clearRefreshCookieOptions);
+            clearRefreshCookie(reply);
 
             return reply.send({ success: true });
         },
