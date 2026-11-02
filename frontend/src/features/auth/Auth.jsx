@@ -79,7 +79,7 @@ export default function Auth({ mode }) {
     setTouched({});
   }, [mode, location.state]);
 
-  if (isSignedIn()) return <Navigate to={target} replace />;
+  // if (isSignedIn()) return <Navigate to={target} replace />;
 
   async function submit(e) {
     e.preventDefault();

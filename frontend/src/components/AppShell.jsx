@@ -3,7 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { BarChart3, ChartNoAxesCombined, ChevronsLeft, ChevronsRight, FileText, FolderOpen, LayoutDashboard, LogOut, Menu, Receipt, RefreshCw, Scale, Search, Settings, SearchX, Users, Wallet, X } from 'lucide-react';
 import { Brand } from './Brand.jsx';
 import { IconButton, ToastProvider } from './ui.jsx';
-import { clearSession, session } from '../services/api.js';
+import { clearSession, session , api} from '../services/api.js';
 import { fetchShared } from '../lib/hooks.js';
 import { asList } from '../lib/models.js';
 
@@ -110,7 +110,16 @@ export function AppShell() {
     return () => window.removeEventListener('settle-auth-expired', out);
   }, [navigate, pathname]);
 
-  const signOut = () => { clearSession(); navigate('/login', { replace: true }); };
+const signOut = async () => {
+  try {
+    await api("/v1/auth/logout", {
+      method: "POST",
+    });
+  } finally {
+    clearSession();
+    navigate("/login", { replace: true });
+  }
+};
 
   return (
     <ToastProvider>

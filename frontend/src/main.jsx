@@ -1,4 +1,4 @@
-import { lazy, Suspense } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createBrowserRouter, Navigate, RouterProvider, useLocation } from 'react-router-dom';
 import './styles/tokens.css';
@@ -6,7 +6,10 @@ import './styles/app.css';
 import './styles/marketing.css';
 import { AppShell } from './components/AppShell.jsx';
 import { Button, PanelSkeleton, ToastProvider } from './components/ui.jsx';
-import { isSignedIn } from './services/api.js';
+import {
+  isSignedIn,
+  refreshSession,
+} from './services/api.js';
 
 import Landing from './features/marketing/Landing.jsx';
 import Auth from './features/auth/Auth.jsx';
@@ -30,10 +33,62 @@ const DisputeDetail = lazy(() => import('./features/disputes/DisputeDetail.jsx')
 
 const page = (el) => <Suspense fallback={<PanelSkeleton rows={6} />}>{el}</Suspense>;
 
+
 function Guard() {
   const location = useLocation();
-  return isSignedIn() ? <AppShell /> : <Navigate to="/login" replace state={{ from: { pathname: location.pathname, search: location.search } }} />;
+
+  const [checking, setChecking] = useState(!isSignedIn());
+  const [authenticated, setAuthenticated] = useState(isSignedIn());
+
+  useEffect(() => {
+    let active = true;
+
+    async function restoreSession() {
+      if (isSignedIn()) {
+        setAuthenticated(true);
+        setChecking(false);
+        return;
+      }
+
+      setChecking(true);
+
+      const restored = await refreshSession();
+
+      if (!active) return;
+
+      setAuthenticated(restored && isSignedIn());
+      setChecking(false);
+    }
+
+    restoreSession();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  if (checking) {
+    return <PanelSkeleton rows={6} />;
+  }
+
+  if (!authenticated) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{
+          from: {
+            pathname: location.pathname,
+            search: location.search,
+          },
+        }}
+      />
+    );
+  }
+
+  return <AppShell />;
 }
+
 
 function NotFound() {
   return (

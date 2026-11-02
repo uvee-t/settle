@@ -6,6 +6,7 @@ import { env } from "./config/env.js";
 import { logger } from "./lib/logger.js";
 import { pool } from "./db/client.js";
 import { redis } from "./lib/redis.js";
+import cookie from "@fastify/cookie";
 
 import { healthRoutes } from "./modules/health/health.routes.js";
 import { webhookRoutes } from "./modules/webhooks/webhook.routes.js";
@@ -108,6 +109,7 @@ app.setErrorHandler((error: unknown, request, reply) => {
 
 await app.register(healthRoutes);
 await app.register(metaRoutes);
+await app.register(cookie);
 await app.register(authRoutes);
 await app.register(workspaceRoutes);
 await app.register(clientRoutes);
