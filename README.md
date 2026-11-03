@@ -380,37 +380,37 @@ docs/
 ### 1. Landing page
 
 <!-- SCREENSHOT: Add docs/screenshots/01-landing-page.png -->
-![Settle landing page](docs/screenshots/01-landing-page.png)
+![Settle landing page](docs/screenshots/01-landing-page.jpg)
 
 ### 2. Dashboard overview
 
 <!-- SCREENSHOT: Add docs/screenshots/03-dashboard-overview.png -->
-![Settle dashboard](docs/screenshots/03-dashboard-overview.png)
+![Settle dashboard](docs/screenshots/03-dashboard-overview.jpg)
 
 ### 3. Contract details and milestones
 
 <!-- SCREENSHOT: Add docs/screenshots/05-contract-details.png -->
-![Contract details and milestones](docs/screenshots/05-contract-details.png)
+![Contract details and milestones](docs/screenshots/05-contract-details.jpg)
 
 ### 4. AI contract extraction
 
 <!-- SCREENSHOT: Add docs/screenshots/06-ai-contract-extraction.png -->
-![AI contract extraction](docs/screenshots/06-ai-contract-extraction.png)
+![AI contract extraction](docs/screenshots/06-ai-contract-extraction.jpg)
 
 ### 5. Invoice and PayPal integration
 
 <!-- SCREENSHOT: Add docs/screenshots/08-invoice-details.png -->
-![Invoice details](docs/screenshots/08-invoice-details.png)
+![Invoice details](docs/screenshots/08-invoice-details.jpg)
 
 ### 6. Payments and cash flow
 
 <!-- SCREENSHOT: Add docs/screenshots/10-payments.png -->
-![Payment tracking](docs/screenshots/10-payments.png)
+![Payment tracking](docs/screenshots/10-payments.jpg)
 
 ### 7. Disputes and evidence review
 
 <!-- SCREENSHOT: Add docs/screenshots/13-evidence-review.png -->
-![Dispute evidence review](docs/screenshots/13-evidence-review.png)
+![Dispute evidence review](docs/screenshots/13-evidence-review.jpg)
 
 ### Screenshot guidance
 
