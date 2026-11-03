@@ -1031,17 +1031,13 @@ Please do not include secrets, real customer contracts, personal information, or
 
 ## License
 
-This project should be distributed under an OSI-approved open-source license. Add the complete text of the selected OSI-approved license at the repository root before publishing.
+Settle is licensed under the Apache License, Version 2.0.
 
-Before publishing, add the complete text of the **MIT License** in a file named `LICENSE`, with the correct copyright holder and year. Do not claim that the repository is MIT-licensed until that file has been added.
+See the [LICENSE](LICENSE) file for details.
 
 ---
 
 ## Acknowledgements
 
 - [PayPal Developer Platform](https://developer.paypal.com/) — payment APIs and Sandbox environment.
-- [Google AI for Developers](https://ai.google.dev/) — Gemini API.
-- [Groq](https://groq.com/) — fallback model inference platform.
 - [Render](https://render.com/) — application hosting.
-- [Neon](https://neon.tech/) — managed PostgreSQL (if used in the submitted deployment).
-- [Backblaze](https://www.backblaze.com/) — S3-compatible object storage (if used in the submitted deployment).
