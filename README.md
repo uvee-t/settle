@@ -184,31 +184,31 @@ sequenceDiagram
 
 The following technologies are visible in the repository or its configuration.
 
-| Area | Technology | Role |
-|---|---|---|
-| Frontend | React 19 | User interface |
-| Frontend tooling | Vite 6 | Development server and production bundling |
-| Routing | React Router 7 | URL-based application routes |
-| Charts | Recharts | Dashboard and financial visualizations |
-| Backend | Node.js + TypeScript | Runtime and application language |
-| API framework | Fastify 5 | REST API, plugins, and request handling |
-| Validation | Zod 4 | Request and AI-output validation |
-| Database | PostgreSQL | Persistent application data |
-| Database hosting | Neon (supported deployment option) | Managed PostgreSQL |
-| ORM / migrations | Drizzle ORM + Drizzle Kit | Typed queries and schema migrations |
-| Queue | BullMQ | Asynchronous jobs |
-| Queue / lock store | Redis + ioredis | Job coordination, locks, and rate limits |
-| Authentication | JWT (`jose`) | Short-lived access tokens |
-| Password hashing | Node.js `scrypt` | Password hashing |
-| Object storage | Backblaze B2 S3-compatible API or AWS S3-compatible configuration | Private document storage |
-| PDF text extraction | Poppler `pdftotext` | Extract text from PDFs |
-| Image OCR | Tesseract OCR | Extract text from supported images |
-| Payment platform | PayPal Developer Platform | Sandbox invoicing, disputes, reporting, and webhooks |
-| Primary AI | Google Gemini 2.5 Flash | Contract and evidence analysis |
-| Fallback inference provider | Groq | OpenAI-compatible fallback inference |
-| Logging | Pino (through Fastify logging) | Structured application logs |
-| Tests | Vitest | Backend tests |
-| Deployment | Render | Hosting for frontend/API and, when configured, worker services |
+| Area                        | Technology                                                        | Role                                                           |
+| --------------------------- | ----------------------------------------------------------------- | -------------------------------------------------------------- |
+| Frontend                    | React 19                                                          | User interface                                                 |
+| Frontend tooling            | Vite 6                                                            | Development server and production bundling                     |
+| Routing                     | React Router 7                                                    | URL-based application routes                                   |
+| Charts                      | Recharts                                                          | Dashboard and financial visualizations                         |
+| Backend                     | Node.js + TypeScript                                              | Runtime and application language                               |
+| API framework               | Fastify 5                                                         | REST API, plugins, and request handling                        |
+| Validation                  | Zod 4                                                             | Request and AI-output validation                               |
+| Database                    | PostgreSQL                                                        | Persistent application data                                    |
+| Database hosting            | Neon (supported deployment option)                                | Managed PostgreSQL                                             |
+| ORM / migrations            | Drizzle ORM + Drizzle Kit                                         | Typed queries and schema migrations                            |
+| Queue                       | BullMQ                                                            | Asynchronous jobs                                              |
+| Queue / lock store          | Redis + ioredis                                                   | Job coordination, locks, and rate limits                       |
+| Authentication              | JWT (`jose`)                                                      | Short-lived access tokens                                      |
+| Password hashing            | Node.js `scrypt`                                                  | Password hashing                                               |
+| Object storage              | Backblaze B2 S3-compatible API or AWS S3-compatible configuration | Private document storage                                       |
+| PDF text extraction         | Poppler `pdftotext`                                               | Extract text from PDFs                                         |
+| Image OCR                   | Tesseract OCR                                                     | Extract text from supported images                             |
+| Payment platform            | PayPal Developer Platform                                         | Sandbox invoicing, disputes, reporting, and webhooks           |
+| Primary AI                  | Google Gemini 2.5 Flash                                           | Contract and evidence analysis                                 |
+| Fallback inference provider | Groq                                                              | OpenAI-compatible fallback inference                           |
+| Logging                     | Pino (through Fastify logging)                                    | Structured application logs                                    |
+| Tests                       | Vitest                                                            | Backend tests                                                  |
+| Deployment                  | Render                                                            | Hosting for frontend/API and, when configured, worker services |
 
 The repository does not currently show an Elasticsearch integration. Search-related UI functionality should not be described as Elasticsearch-powered.
 
@@ -220,15 +220,15 @@ Settle integrates with the **PayPal Developer Platform using the free PayPal San
 
 ### PayPal tools and APIs
 
-| PayPal tool / API | How Settle uses it |
-|---|---|
-| **PayPal Developer Dashboard** | Create Sandbox business and personal test accounts, create REST applications, obtain Client ID and Secret, and configure webhook subscriptions. |
-| **PayPal REST API** | Base API surface used by Settle's PayPal adapters. |
-| **PayPal OAuth 2.0** | Uses the Client Credentials flow (`/v1/oauth2/token`) to obtain access tokens for server-to-server PayPal API requests. |
-| **PayPal Invoicing API** | Creates, retrieves, searches, sends, reminds, and cancels invoices using PayPal's v2 invoicing endpoints. |
-| **PayPal Webhooks** | Receives asynchronous provider events. Settle verifies webhook signatures through PayPal's webhook verification endpoint before accepting events for processing. |
-| **PayPal Disputes API** | Lists disputes, retrieves dispute details, and supports evidence submission through the dispute adapter. |
-| **PayPal Reporting API** | Retrieves transaction reporting data using the Reporting Transactions endpoint. |
+| PayPal tool / API              | How Settle uses it                                                                                                                                               |
+| ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **PayPal Developer Dashboard** | Create Sandbox business and personal test accounts, create REST applications, obtain Client ID and Secret, and configure webhook subscriptions.                  |
+| **PayPal REST API**            | Base API surface used by Settle's PayPal adapters.                                                                                                               |
+| **PayPal OAuth 2.0**           | Uses the Client Credentials flow (`/v1/oauth2/token`) to obtain access tokens for server-to-server PayPal API requests.                                          |
+| **PayPal Invoicing API**       | Creates, retrieves, searches, sends, reminds, and cancels invoices using PayPal's v2 invoicing endpoints.                                                        |
+| **PayPal Webhooks**            | Receives asynchronous provider events. Settle verifies webhook signatures through PayPal's webhook verification endpoint before accepting events for processing. |
+| **PayPal Disputes API**        | Lists disputes, retrieves dispute details, and supports evidence submission through the dispute adapter.                                                         |
+| **PayPal Reporting API**       | Retrieves transaction reporting data using the Reporting Transactions endpoint.                                                                                  |
 
 ### Workspace-scoped PayPal connections
 
@@ -237,7 +237,6 @@ Settle supports connecting a PayPal REST application to an individual workspace.
 When an authenticated workspace performs supported PayPal operations, the backend resolves that workspace's connected PayPal account, decrypts its credentials in the server process, and creates a PayPal client for the configured environment. Invoice operations, dispute operations, reporting requests, evidence submission, and webhook reconciliation use the workspace connection flow implemented in the corresponding modules.
 
 The browser never receives the PayPal Client Secret. For the project demonstration, connect Sandbox applications and use the Sandbox environment. The PayPal base URL is selected from the workspace connection's environment setting.
-
 
 ### PayPal invoice lifecycle
 
@@ -380,36 +379,43 @@ docs/
 ### 1. Landing page
 
 <!-- SCREENSHOT: Add docs/screenshots/01-landing-page.png -->
+
 ![Settle landing page](docs/screenshots/01-landing-page.jpg)
 
 ### 2. Dashboard overview
 
 <!-- SCREENSHOT: Add docs/screenshots/03-dashboard-overview.png -->
+
 ![Settle dashboard](docs/screenshots/03-dashboard-overview.jpg)
 
 ### 3. Contract details and milestones
 
 <!-- SCREENSHOT: Add docs/screenshots/05-contract-details.png -->
+
 ![Contract details and milestones](docs/screenshots/05-contract-details.jpg)
 
 ### 4. AI contract extraction
 
 <!-- SCREENSHOT: Add docs/screenshots/06-ai-contract-extraction.png -->
+
 ![AI contract extraction](docs/screenshots/06-ai-contract-extraction.jpg)
 
 ### 5. Invoice and PayPal integration
 
 <!-- SCREENSHOT: Add docs/screenshots/08-invoice-details.png -->
+
 ![Invoice details](docs/screenshots/08-invoice-details.jpg)
 
 ### 6. Payments and cash flow
 
 <!-- SCREENSHOT: Add docs/screenshots/10-payments.png -->
+
 ![Payment tracking](docs/screenshots/10-payments.jpg)
 
 ### 7. Disputes and evidence review
 
 <!-- SCREENSHOT: Add docs/screenshots/13-evidence-review.png -->
+
 ![Dispute evidence review](docs/screenshots/13-evidence-review.jpg)
 
 ### Screenshot guidance
@@ -513,8 +519,8 @@ settle-v1.6.0/
 ### 1. Clone the repository
 
 ```bash
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY>.git
-cd <YOUR_REPOSITORY>
+git clone https://github.com/uvee-t/settle.git
+cd ./settle
 ```
 
 Replace the repository URL with the public repository URL.
@@ -571,60 +577,60 @@ npm run frontend:build
 
 Copy `.env.example` to `.env`. The following table describes the main variables. Values must be supplied through your local environment or hosting provider; never commit real secrets.
 
-| Variable | Purpose | Required |
-|---|---|---|
-| `NODE_ENV` | Runtime environment: `development`, `test`, or `production` | Yes |
-| `PORT` | API listening port; defaults to `4000` | Optional |
-| `HOST` | API bind address; use `0.0.0.0` in containers/Render | Optional |
-| `LOG_LEVEL` | Pino/Fastify log level | Optional |
-| `DATABASE_URL` | PostgreSQL connection string | Yes |
-| `REDIS_URL` | Redis connection string used by BullMQ and coordination | Yes |
-| `CORS_ORIGIN` | Exact frontend origin allowed by the API | Yes in production |
-| `AUTH_JWT_SECRET` | Strong secret used to sign access JWTs; at least 32 characters | Yes in production |
-| `ACCESS_TOKEN_TTL_SECONDS` | Access token lifetime; default `900` seconds | Optional |
-| `REFRESH_TOKEN_TTL_DAYS` | Refresh-token lifetime; default `30` days | Optional |
-| `PAYPAL_BASE_URL` | Global PayPal API base URL; Sandbox default is `https://api-m.sandbox.paypal.com` | Depends on PayPal mode |
-| `PAYPAL_CLIENT_ID` | Global PayPal REST app Client ID used by the global PayPal client | Depends on adapter/configuration |
-| `PAYPAL_CLIENT_SECRET` | Global PayPal REST app Secret | Depends on adapter/configuration |
-| `PAYPAL_WEBHOOK_ID` | Webhook ID used for PayPal signature verification | Required for webhook verification |
-| `PAYPAL_ALLOW_SANDBOX_IN_PRODUCTION` | Explicitly permits Sandbox base URL in production; set `true` only for a Sandbox demo | Required for production Sandbox demo |
-| `PAYPAL_CREDENTIALS_ENCRYPTION_KEY` | Exactly 32 UTF-8 bytes; encrypts workspace PayPal credentials | Yes in production |
-| `AI_ENABLED` | Enables/disables AI processing | Optional; default false |
-| `AI_PROVIDER` | Primary provider: `gemini`, `openai`, or `groq` | Optional |
-| `AI_API_KEY` | Primary provider API key | Required when AI is enabled |
-| `AI_MODEL` | Primary model ID; default `gemini-2.5-flash` | Optional |
-| `AI_BASE_URL` | Optional custom primary provider base URL | Optional |
-| `AI_FALLBACK_PROVIDER` | Fallback provider: `none`, `groq`, or `openai` | Optional |
-| `AI_FALLBACK_API_KEY` | Fallback provider API key | Required when fallback is enabled |
-| `AI_FALLBACK_MODEL` | Exact fallback model ID enabled for your provider account | Required when fallback is enabled |
-| `AI_FALLBACK_BASE_URL` | Optional custom fallback base URL | Optional |
-| `AI_TIMEOUT_MS` | Provider request timeout; default `45000` | Optional |
-| `AI_MAX_INPUT_CHARS` | Maximum AI input characters | Optional |
-| `AI_MAX_OUTPUT_TOKENS` | Maximum model output tokens | Optional |
-| `AI_RATE_LIMIT_MAX` | Per-provider request limit per window | Optional |
-| `AI_RATE_LIMIT_WINDOW_MS` | AI rate-limit window in milliseconds | Optional |
-| `B2_ENDPOINT` | Backblaze B2 S3-compatible endpoint | Required for B2 |
-| `B2_REGION` | B2 region | Required for B2 |
-| `B2_BUCKET` | B2 bucket name | Required for B2 |
-| `B2_KEY_ID` | B2 key ID | Required for B2 |
-| `B2_APPLICATION_KEY` | B2 application key | Required for B2 |
-| `AWS_REGION` | AWS S3 region fallback | Optional |
-| `AWS_ACCESS_KEY_ID` | AWS S3 access key fallback | Optional |
-| `AWS_SECRET_ACCESS_KEY` | AWS S3 secret fallback | Optional |
-| `AWS_S3_BUCKET` | AWS S3 bucket fallback | Optional |
-| `DOCUMENT_MAX_SIZE_BYTES` | Maximum document size; default 25 MiB | Optional |
-| `DOCUMENT_ALLOWED_CONTENT_TYPES` | Comma-separated allowed MIME types | Optional |
-| `DOCUMENT_MALWARE_SCAN_ENABLED` | Enables ClamAV scanning | Recommended |
-| `CLAMAV_HOST` / `CLAMAV_PORT` | ClamAV service address | Required if scanning enabled |
-| `ALLOW_UNSCANNED_DOCUMENTS` | Explicit production opt-out for malware scanning; avoid unless you understand the risk | Optional |
-| `REMINDER_ENABLED` | Enables scheduled invoice reminders | Optional |
-| `REMINDER_DAYS_BEFORE_DUE` | Reminder lead time in days | Optional |
-| `DB_POOL_MAX` | PostgreSQL connection pool maximum | Optional |
-| `DB_CONNECTION_TIMEOUT_MS` | Database connection timeout | Optional |
-| `DB_SSL` | Enables PostgreSQL TLS | Optional |
-| `DB_SSL_REJECT_UNAUTHORIZED` | Enforces certificate validation | Optional |
-| `API_RATE_LIMIT_MAX` | General API rate limit | Optional |
-| `API_RATE_LIMIT_WINDOW` | General API rate-limit window | Optional |
+| Variable                             | Purpose                                                                                | Required                             |
+| ------------------------------------ | -------------------------------------------------------------------------------------- | ------------------------------------ |
+| `NODE_ENV`                           | Runtime environment: `development`, `test`, or `production`                            | Yes                                  |
+| `PORT`                               | API listening port; defaults to `4000`                                                 | Optional                             |
+| `HOST`                               | API bind address; use `0.0.0.0` in containers/Render                                   | Optional                             |
+| `LOG_LEVEL`                          | Pino/Fastify log level                                                                 | Optional                             |
+| `DATABASE_URL`                       | PostgreSQL connection string                                                           | Yes                                  |
+| `REDIS_URL`                          | Redis connection string used by BullMQ and coordination                                | Yes                                  |
+| `CORS_ORIGIN`                        | Exact frontend origin allowed by the API                                               | Yes in production                    |
+| `AUTH_JWT_SECRET`                    | Strong secret used to sign access JWTs; at least 32 characters                         | Yes in production                    |
+| `ACCESS_TOKEN_TTL_SECONDS`           | Access token lifetime; default `900` seconds                                           | Optional                             |
+| `REFRESH_TOKEN_TTL_DAYS`             | Refresh-token lifetime; default `30` days                                              | Optional                             |
+| `PAYPAL_BASE_URL`                    | Global PayPal API base URL; Sandbox default is `https://api-m.sandbox.paypal.com`      | Depends on PayPal mode               |
+| `PAYPAL_CLIENT_ID`                   | Global PayPal REST app Client ID used by the global PayPal client                      | Depends on adapter/configuration     |
+| `PAYPAL_CLIENT_SECRET`               | Global PayPal REST app Secret                                                          | Depends on adapter/configuration     |
+| `PAYPAL_WEBHOOK_ID`                  | Webhook ID used for PayPal signature verification                                      | Required for webhook verification    |
+| `PAYPAL_ALLOW_SANDBOX_IN_PRODUCTION` | Explicitly permits Sandbox base URL in production; set `true` only for a Sandbox demo  | Required for production Sandbox demo |
+| `PAYPAL_CREDENTIALS_ENCRYPTION_KEY`  | Exactly 32 UTF-8 bytes; encrypts workspace PayPal credentials                          | Yes in production                    |
+| `AI_ENABLED`                         | Enables/disables AI processing                                                         | Optional; default false              |
+| `AI_PROVIDER`                        | Primary provider: `gemini`, `openai`, or `groq`                                        | Optional                             |
+| `AI_API_KEY`                         | Primary provider API key                                                               | Required when AI is enabled          |
+| `AI_MODEL`                           | Primary model ID; default `gemini-2.5-flash`                                           | Optional                             |
+| `AI_BASE_URL`                        | Optional custom primary provider base URL                                              | Optional                             |
+| `AI_FALLBACK_PROVIDER`               | Fallback provider: `none`, `groq`, or `openai`                                         | Optional                             |
+| `AI_FALLBACK_API_KEY`                | Fallback provider API key                                                              | Required when fallback is enabled    |
+| `AI_FALLBACK_MODEL`                  | Exact fallback model ID enabled for your provider account                              | Required when fallback is enabled    |
+| `AI_FALLBACK_BASE_URL`               | Optional custom fallback base URL                                                      | Optional                             |
+| `AI_TIMEOUT_MS`                      | Provider request timeout; default `45000`                                              | Optional                             |
+| `AI_MAX_INPUT_CHARS`                 | Maximum AI input characters                                                            | Optional                             |
+| `AI_MAX_OUTPUT_TOKENS`               | Maximum model output tokens                                                            | Optional                             |
+| `AI_RATE_LIMIT_MAX`                  | Per-provider request limit per window                                                  | Optional                             |
+| `AI_RATE_LIMIT_WINDOW_MS`            | AI rate-limit window in milliseconds                                                   | Optional                             |
+| `B2_ENDPOINT`                        | Backblaze B2 S3-compatible endpoint                                                    | Required for B2                      |
+| `B2_REGION`                          | B2 region                                                                              | Required for B2                      |
+| `B2_BUCKET`                          | B2 bucket name                                                                         | Required for B2                      |
+| `B2_KEY_ID`                          | B2 key ID                                                                              | Required for B2                      |
+| `B2_APPLICATION_KEY`                 | B2 application key                                                                     | Required for B2                      |
+| `AWS_REGION`                         | AWS S3 region fallback                                                                 | Optional                             |
+| `AWS_ACCESS_KEY_ID`                  | AWS S3 access key fallback                                                             | Optional                             |
+| `AWS_SECRET_ACCESS_KEY`              | AWS S3 secret fallback                                                                 | Optional                             |
+| `AWS_S3_BUCKET`                      | AWS S3 bucket fallback                                                                 | Optional                             |
+| `DOCUMENT_MAX_SIZE_BYTES`            | Maximum document size; default 25 MiB                                                  | Optional                             |
+| `DOCUMENT_ALLOWED_CONTENT_TYPES`     | Comma-separated allowed MIME types                                                     | Optional                             |
+| `DOCUMENT_MALWARE_SCAN_ENABLED`      | Enables ClamAV scanning                                                                | Recommended                          |
+| `CLAMAV_HOST` / `CLAMAV_PORT`        | ClamAV service address                                                                 | Required if scanning enabled         |
+| `ALLOW_UNSCANNED_DOCUMENTS`          | Explicit production opt-out for malware scanning; avoid unless you understand the risk | Optional                             |
+| `REMINDER_ENABLED`                   | Enables scheduled invoice reminders                                                    | Optional                             |
+| `REMINDER_DAYS_BEFORE_DUE`           | Reminder lead time in days                                                             | Optional                             |
+| `DB_POOL_MAX`                        | PostgreSQL connection pool maximum                                                     | Optional                             |
+| `DB_CONNECTION_TIMEOUT_MS`           | Database connection timeout                                                            | Optional                             |
+| `DB_SSL`                             | Enables PostgreSQL TLS                                                                 | Optional                             |
+| `DB_SSL_REJECT_UNAUTHORIZED`         | Enforces certificate validation                                                        | Optional                             |
+| `API_RATE_LIMIT_MAX`                 | General API rate limit                                                                 | Optional                             |
+| `API_RATE_LIMIT_WINDOW`              | General API rate-limit window                                                          | Optional                             |
 
 ### Example AI configuration
 
